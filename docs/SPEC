@@ -1,0 +1,261 @@
+# OpenOT Technical Specification
+
+## 1. Design Philosophy: The "Type-Agnostic" Core
+
+The core architecture is decoupled from the data format. The system functions as a **Replication State Machine** that accepts a definition of "How to mutate data."
+
+We adopt a strategy similar to ShareDB, where the Document defines its **Type**, and the Server simply executes the logic defined by that Type.
+
+## 2. Project Structure (Monorepo)
+
+The repository is organized to separate the generic OT logic, state management, and infrastructure.
+
+| Package                  | Purpose                                                            | Dependencies        |
+| :----------------------- | :----------------------------------------------------------------- | :------------------ |
+| `packages/core`          | Generic `OTType` interface & Standard Types (`text`, `json`).      | **None**            |
+| `packages/client`        | Generic Client-side state machine (`OTClient`).                    | `core`              |
+| `packages/server`        | Server-side concurrency, conflict resolution & multi-type support. | `core`              |
+| `packages/adapter-redis` | Persistence adapter for Redis.                                     | `server`, `ioredis` |
+| `packages/adapter-s3`    | Snapshot adapter for S3.                                           | `server`, `aws-sdk` |
+| `apps/demo-lexical`      | Implementation example using Lexical.                              | `client`            |
+| `apps/demo-monaco`       | Implementation example using Monaco/CodeMirror.                    | `client`            |
+
+---
+
+## 3. The Type Interface (`packages/core`)
+
+The foundation of the library is the `OTType<Snapshot, Op>` interface. Any data structure can be collaborative if it implements this contract.
+
+```typescript
+export interface OTType<Snapshot, Op> {
+  /**
+   * Unique name (e.g., 'text-delta', 'json-patch', 'custom-lexical')
+   */
+  name: string;
+
+  /**
+   * Create the initial empty state of the document
+   */
+  create(): Snapshot;
+
+  /**
+   * Apply an operation to a snapshot to produce a new snapshot
+   */
+  apply(snapshot: Snapshot, op: Op): Snapshot;
+
+  /**
+   * Transform opA against opB.
+   * Returns opA', which is opA modified to apply AFTER opB.
+   * 'side' determines tie-breaking for symmetric conflicts.
+   */
+  transform(opA: Op, opB: Op, side: "left" | "right"): Op;
+
+  /**
+   * Merge two consecutive operations into one efficient operation
+   */
+  compose(opA: Op, opB: Op): Op;
+
+  /**
+   * Optional: Generate an operation that undoes the given op
+   */
+  invert?(op: Op): Op;
+}
+```
+
+---
+
+## 4. Included Standard Types
+
+To ensure "batteries-included" utility, the library ships with two standard implementations.
+
+### 4.1 `types.text` (The Default)
+
+This implements the classic Text OT (Jupiter/Google Wave style).
+
+- **Snapshot:** `string`
+- **Operation:** `(Retain | Insert | Delete)[]`
+- **Use Case:** Plain text editors, Markdown, Code.
+
+#### Data Model & Normalization
+
+The fundamental unit is a list of components traversing the document:
+
+```typescript
+type OpComponent =
+  | { r: number } // Retain: Keep N characters
+  | { i: string } // Insert: Insert string S
+  | { d: number }; // Delete: Delete N characters
+
+type TextOperation = OpComponent[];
+```
+
+To prevent ambiguity, the core library enforces **Normalization**:
+
+1.  **Merging:** Consecutive components of the same type are merged.
+2.  **No-Ops:** Components with count 0 or empty strings are removed.
+3.  **Ordering:** When `insert` and `delete` occur at the same position, `delete` usually precedes `insert`.
+
+### 4.2 `types.json` (Structured Data)
+
+- **Snapshot:** `unknown` (JSON Object/Array)
+- **Operation:** Path-based mutations (similar to JSON-Patch but transformable).
+  - `{ p: ['users', 0, 'name'], oi: 'Alice', od: 'Bob' }` (Object Replace)
+  - `{ p: ['counts', 'views'], na: 1 }` (Number Add)
+- **Use Case:** Collaborative forms, nested configuration, or **Serialized Lexical/ProseMirror JSON**.
+
+---
+
+## 5. Client Architecture (`packages/client`)
+
+The Client is now a generic class `OTClient<Snapshot, Op>`.
+
+### 5.1 Initialization
+
+The client must know the _Type_ of document it is editing to handle buffering and composition correctly.
+
+```typescript
+// Example: Using a Custom Lexical Type
+const client = new OTClient({
+  type: LexicalSerializedType, // User provided definition
+  initialRevision: 0,
+  initialSnapshot: docState,
+});
+```
+
+### 5.2 The Generic State Machine
+
+The client manages the complexity of network latency using a formal State Machine. The logic remains identical to the text-only version, but it delegates the math to the injected `type`.
+
+#### States
+
+1.  **Synchronized**: Client matches server. No pending edits.
+2.  **AwaitingConfirm**: Client sent `Op_1` and is waiting for ACK. User edits during this time are buffered.
+3.  **AwaitingWithBuffer**: Client sent `Op_1`, waiting for ACK, and has locally applied `Op_2`.
+
+#### Transitions
+
+- **User Edits:**
+  - _Sync_ $\rightarrow$ Send Op $\rightarrow$ _AwaitingConfirm_.
+  - _AwaitingConfirm_ $\rightarrow$ Compose into Buffer (`this.type.compose`) $\rightarrow$ _AwaitingWithBuffer_.
+- **Server ACK:**
+  - _AwaitingConfirm_ $\rightarrow$ _Synchronized_.
+  - _AwaitingWithBuffer_ $\rightarrow$ Send Buffer $\rightarrow$ _AwaitingConfirm_.
+- **Server Remote Op ($Op_{remote}$):**
+  - _Sync_: Apply $Op_{remote}$.
+  - _AwaitingConfirm_:
+    - Transform $Op_{pending}$ vs $Op_{remote}$ (`this.type.transform`).
+    - Update pending op, apply transformed remote op.
+  - _AwaitingWithBuffer_:
+    - Transform $Op_{pending}$ vs $Op_{remote}$ $\rightarrow$ $Op_{remote}'$.
+    - Transform $Op_{buffer}$ vs $Op_{remote}'$.
+    - Update pending & buffer, apply transformed remote op.
+
+---
+
+## 6. Server Architecture (`packages/server`)
+
+The server is the "Source of Truth." It is purely event-driven, storage-agnostic, and supports multiple OT types.
+
+### 6.1 Multi-Type Support
+
+A single server instance can host different document types side-by-side (e.g., a Markdown document and a User Settings object).
+
+1.  **Connection:** Client joins document `doc-123`.
+2.  **Handshake:** Server responds: `{ revision: 10, type: 'text-plain' }`.
+3.  **Operation:** Server looks up registered handler for `'text-plain'` to perform validation and transformation.
+
+### 6.2 The Atomic Transaction
+
+When the server receives an operation $Op_C$ from a client at revision $R_C$, but the server is currently at revision $R_S$ (where $R_S > R_C$):
+
+1.  **Fetch History:** Retrieve operations from history $[R_C, R_C+1, ... R_S]$.
+2.  **Catch Up (Transform):**
+    The incoming operation must be transformed against _all_ intervening operations.
+    $$Op_{final} = Op_C$$
+    $$\text{for } Op_{hist} \text{ in History: } [Op_{final}, \_] = Type.transform(Op_{final}, Op_{hist})$$
+3.  **Apply & Store:**
+    - Save $Op_{final}$ to history log.
+    - Increment Server Revision ($R_S + 1$).
+4.  **Broadcast:** Send $Op_{final}$ to all _other_ clients.
+5.  **ACK:** Send ACK (with new revision $R_S+1$) to the original sender.
+
+### 6.3 Storage Interface
+
+Storage stores opaque blobs and doesn't care about internal structure.
+
+```typescript
+interface DocumentRecord {
+  type: string; // 'text', 'json', 'custom-xml'
+  v: number; // revision
+  data: any; // The Snapshot
+}
+
+interface IBackendAdapter {
+  /** Get the current global revision and type of the document */
+  getRecord(docId: string): Promise<DocumentRecord>;
+
+  /** Get a range of past operations for transformation */
+  getHistory(docId: string, start: number, end?: number): Promise<any[]>;
+
+  /** Atomic commit: Add op to history AND increment revision */
+  saveOperation(docId: string, op: any, newRevision: number): Promise<void>;
+}
+```
+
+---
+
+## 7. Editor Integration Protocol
+
+To support **any** editor (Lexical, Monaco, Quill), the system uses an Adapter Pattern. This is primarily relevant for the `types.text` implementation.
+
+### 7.1 Editor Adapter Interface
+
+```typescript
+interface EditorAdapter {
+  /**
+   * Called by OT Client when a remote op needs to be applied.
+   * The adapter must translate OT Op -> Editor Command.
+   */
+  applyRemote(op: TextOperation): void;
+
+  /**
+   * The adapter listens to Editor events, converts them to OT Ops,
+   * and calls this callback.
+   */
+  onUserChange(callback: (op: TextOperation) => void): void;
+
+  /**
+   * Converts current editor state to plain text (for initialization).
+   */
+  getText(): string;
+}
+```
+
+---
+
+## 8. Extensibility Specifications
+
+### 8.1 Snapshot Strategy (`packages/adapter-s3`)
+
+Replaying thousands of operations is slow.
+
+- **Logic:** The `Server` emits an event `onRevisionIncrement`.
+- **Plugin:** A snapshot plugin listens. `if (rev % 100 === 0)` $\rightarrow$ Fetch full snapshot $\rightarrow$ Write to S3/R2.
+- **Recovery:** When loading, check S3 for latest snapshot ($Rev_{100}$), then fetch ops $101 \dots current$ from Redis.
+
+### 8.2 Presence (Cursor Awareness)
+
+While not strictly OT, presence is usually required.
+
+- **Ephemeral:** Do not store in the permanent operation log.
+- **Transport:** Broadcast via Redis Pub/Sub or Socket.IO volatile events.
+- **Data:** `{ clientId, selection: { start: 10, end: 10 }, userName, color }`.
+
+---
+
+## 9. Implementation Roadmap
+
+1.  **Phase 1: Core:** Implement `OTType` interface. Implement `types.text` and unit test `transform`/`compose` with property-based testing.
+2.  **Phase 2: Server Logic:** Implement the generic Server with `IBackendAdapter` (in-memory first). Verify multi-type support.
+3.  **Phase 3: Redis Adapter:** Implement the real persistence layer.
+4.  **Phase 4: Lexical Adapter:** Build the DOM/Lexical $\leftrightarrow$ OT bridge (likely using `types.text` or a custom `types.lexical`).

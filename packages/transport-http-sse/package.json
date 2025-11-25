@@ -1,0 +1,19 @@
+{
+  "name": "@open-ot/transport-http-sse",
+  "version": "0.0.0",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "dependencies": {
+    "@open-ot/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@open-ot/typescript-config": "workspace:*",
+    "@open-ot/eslint-config": "workspace:*",
+    "vitest": "^1.0.0",
+    "@types/node": "^20.0.0",
+    "eventsource": "^2.0.2"
+  },
+  "scripts": {
+    "test": "vitest run"
+  }
+}

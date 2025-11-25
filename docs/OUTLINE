@@ -1,0 +1,165 @@
+# OpenOT Library Specification
+
+## 1\. Architecture Philosophy
+
+**"Core Logic First, Infrastructure Second."**
+The library is split into a pure computational core (zero dependencies) and optional infrastructure adapters.
+
+### Package Structure
+
+- **`@open-ot/core`**: Pure TS. `Retain`, `Insert`, `Delete`, `transform`, `compose`. (No I/O).
+- **`@open-ot/client`**: State machine (`Synchronized`, `AwaitingConfirm`, `AwaitingWithBuffer`).
+- **`@open-ot/server`**: Revision tracking, conflict resolution logic (agnostic of transport).
+- **`@open-ot/adapter-redis`** _(Optional)_: Redis persistence.
+- **`@open-ot/adapter-s3`** _(Optional)_: Snapshot storage.
+
+---
+
+## 2\. Core Interfaces (The Contract)
+
+To make Redis/S3/Socket.IO optional, the library relies on strict interfaces. Users satisfy these interfaces with either built-in adapters or custom code.
+
+### Storage Interface (Server)
+
+Instead of hardcoding Redis commands, the `OTServer` accepts a `DocumentStore`.
+
+```typescript
+export interface DocumentStore {
+  /** Get the current revision number */
+  getRevision(docId: string): Promise<number>;
+
+  /** Save a new operation and increment revision */
+  appendOperation(docId: string, op: ComposedOperation): Promise<void>;
+
+  /** Retrieve history for client catch-up */
+  getOperations(
+    docId: string,
+    fromRevision: number,
+    toRevision?: number
+  ): Promise<ComposedOperation[]>;
+
+  /** Optional: Save/Load full document snapshots (e.g., to S3) */
+  saveSnapshot?(docId: string, state: string, revision: number): Promise<void>;
+  getSnapshot?(
+    docId: string
+  ): Promise<{ state: string; revision: number } | null>;
+}
+```
+
+### Editor Interface (Client)
+
+Decouple from Lexical using an `EditorAdapter`.
+
+```typescript
+export interface EditorAdapter<T = any> {
+  /** Convert native editor events to OT ops */
+  observeChanges(onChange: (op: ComposedOperation) => void): void;
+
+  /** Apply incoming OT ops to the editor */
+  applyOperation(op: ComposedOperation): void;
+
+  /** Handle undo/redo locally vs remotely */
+  invertOperation?(op: ComposedOperation): ComposedOperation;
+}
+```
+
+---
+
+## 3\. Mathematical Core (`@open-ot/core`)
+
+This module contains the pure functions. It defines the transformation property:
+Given two concurrent operations $O_a$ and $O_b$ originating from state $S$:
+$$T(O_a, O_b) \rightarrow [O_a', O_b']$$
+Such that $S \circ O_a \circ O_b' \equiv S \circ O_b \circ O_a'$.
+
+### Types
+
+- **AtomicOp**: `{ type: 'retain' | 'insert' | 'delete', ... }`
+- **TextOp**: A sequence of AtomicOps.
+
+### API
+
+- `transform(opA, opB, side: 'left' | 'right')`
+- `compose(opA, opB)`
+- `invert(op)` (Useful for local undo stacks)
+
+---
+
+## 4\. Server Implementation (`@open-ot/server`)
+
+The server logic handles the "Diamond of Transformation." It is **transport agnostic**. You feed it a request, it returns the response/broadcast payload.
+
+### Usage Example (Express + Socket.IO + Redis)
+
+```typescript
+import { OTServer } from "@open-ot/server";
+import { RedisStore } from "@open-ot/adapter-redis"; // Optional peer dependency
+
+// 1. Inject Storage
+const store = new RedisStore({ client: redisClient });
+const otServer = new OTServer({ store });
+
+// 2. Handle Transport (Socket.IO)
+socket.on("ot:operation", async (payload) => {
+  try {
+    // Core logic: Checks revision, transforms against history if needed, saves to store
+    const result = await otServer.processOperation({
+      docId: payload.docId,
+      op: payload.op,
+      clientId: socket.id,
+    });
+
+    // 3. Broadcast result
+    socket.broadcast.to(payload.docId).emit("ot:op", result.broadcastOp);
+    socket.emit("ot:ack", result.ack);
+  } catch (err) {
+    // Handle divergence or reset requests
+    socket.emit("ot:reset", { reason: "revision_mismatch" });
+  }
+});
+```
+
+---
+
+## 5\. Plugin System
+
+### Persistence Plugins
+
+- **MemoryStore**: (Default) Javascript `Map`. Good for testing/prototyping.
+- **RedisStore**: Uses `ioredis`. Stores history in lists/streams.
+- **PostgresStore**: Uses SQL for strict audit logs.
+
+### Logic Plugins
+
+- **SnapshotStrategy**: Strategy pattern to determine when to save a full snapshot to object storage (e.g., "Every 100 revisions" or "Every 10 minutes").
+  - _Dependencies:_ `@aws-sdk/client-s3` (only if using S3 plugin).
+
+---
+
+## 6\. Implementation Details & Extensions
+
+### dependency Management
+
+- **Core**: 0 dependencies.
+- **Adapters**: Use `peerDependencies` + `peerDependenciesMeta` (optional: true).
+  - _Example:_ The `adapter-redis` package lists `ioredis` as a peer dependency. The user installs it only if they use that adapter.
+
+### Web Worker Support
+
+Provide a factory function to wrap the `Core` in a worker interface.
+
+```typescript
+import { createWorkerProxy } from "@open-ot/worker";
+const ot = createWorkerProxy("./my-ot-worker.js");
+// Returns a Promise-based API mirroring the sync Core API
+```
+
+### Extensibility beyond Text
+
+To allow use cases outside editors (e.g., moving shapes on a canvas), the `Operation` type should be generic.
+
+```typescript
+type Operation<T> = T[];
+// Default is TextOperation, but users can define ShapeMoveOperation
+// They must provide their own `transform` function implementation to the generic OT Server.
+```

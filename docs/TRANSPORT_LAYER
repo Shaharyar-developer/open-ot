@@ -1,0 +1,164 @@
+# **OpenOT Transport Spec — v1.0**
+
+## **Core Philosophy**
+
+The OT engine does transforms.
+The transport moves bytes.
+Neither knows how the other does its job.
+
+---
+
+## **Transport Responsibilities**
+
+A transport adapter MUST:
+
+- Establish a communication channel
+- Deliver messages **upstream** and **downstream**
+- Close cleanly
+
+A transport adapter MUST NOT:
+
+- Parse, transform, or interpret ops
+- Contain document or OT-specific logic
+- Require WebSocket / HTTP / any specific protocol
+
+---
+
+## **Message Format**
+
+Opaque.
+
+The core treats messages as **`unknown`**.
+Transport implements serialization.
+
+Recommended best practice:
+
+- JSON for convenience
+- Binary/protobuf for performance
+
+But spec imposes **no** requirement.
+
+---
+
+## **TransportAdapter Interface**
+
+Provided by **`@open-ot/core`**
+
+```ts
+export interface TransportAdapter<TMessage = unknown> {
+  /**
+   * Establish the connection.
+   * The transport begins delivering messages via `onReceive`.
+   */
+  connect(onReceive: (msg: TMessage) => void): Promise<void>;
+
+  /**
+   * Send a message to the server or other peers.
+   */
+  send(msg: TMessage): Promise<void>;
+
+  /**
+   * Close all resources: sockets, streams, timers, etc.
+   */
+  disconnect(): Promise<void>;
+}
+```
+
+### Behaviors
+
+- `connect()` **must not** block message delivery once resolved
+- `send()` **must** reject failures (network / closed state)
+- Receiving before `connect()` resolves → **not allowed**
+- `disconnect()` can be called multiple times safely
+
+---
+
+## **No Document Multiplexing in Core**
+
+- The core handles a _single collaboration session per client instance_
+- If multiple docs needed → users create multiple clients **OR** implement multiplexing in their custom transport
+
+Because:
+
+> Your library shouldn't babysit routing.
+
+---
+
+## **Lifecycle Guarantees**
+
+Transport MUST:
+
+- Not emit messages after `disconnect()`
+- Not swallow transport errors silently — propagate via
+  - `send()` rejection
+  - optional event callback / logging hook (future)
+
+Optional future additions (non-breaking):
+
+- Reconnection policy
+- Heartbeats
+- Metadata channel
+
+But **not part of v1.0**.
+
+---
+
+## **Discovery & Handshakes**
+
+No handshake protocol is defined by transport.
+Handshake is an **application-layer concern**, e.g.:
+
+- Auth messages
+- Session init
+- Presence negotiation
+- Server version check
+
+Transport just ships bytes.
+
+---
+
+## **Reference Transports** (separate packages)
+
+| Package                        | Protocol                              | Contract                        |
+| ------------------------------ | ------------------------------------- | ------------------------------- |
+| `@open-ot/transport-websocket` | WebSockets                            | Connect/Send/Receive/Disconnect |
+| `@open-ot/transport-http-sse`  | HTTP2 + SSE downstream, POST upstream | Same contract                   |
+
+All qualify as **examples**, not defaults.
+
+---
+
+## **Testing Standard**
+
+A valid transport adapter **must** pass:
+
+- Connect → Send → Receive → Disconnect
+- Send failure after disconnect
+- No receive after disconnect
+- Concurrency-safe: parallel `send()` ops handled gracefully
+
+We’ll publish a shared test harness in a future minor release:
+`@open-ot/transport-test-suite`
+
+---
+
+## **Backward Compatibility**
+
+This `TransportAdapter` definition is locked for **v1.x**
+Changes require:
+
+- New optional fields only
+- No breaking signature shifts
+
+This stability = developer trust.
+
+---
+
+# **Conclusion**
+
+This spec:
+
+- Pure and transport-agnostic
+- Minimal surface area
+- Zero tech-debt commitments
+- Compatible with literally anything that moves packets

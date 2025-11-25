@@ -1,0 +1,78 @@
+---
+title: Introduction
+description: The Type-Agnostic Operational Transformation Framework.
+icon: Sparkle
+---
+
+OpenOT is a **headless, type-agnostic Operational Transformation (OT) engine** designed for developers who want to build real-time collaborative applications without being locked into a specific database, network transport, or rich-text editor.
+
+Unlike other solutions that bundle the editor, the database, and the WebSocket server into a black box, OpenOT gives you the **raw synchronization primitives** to build anything from a collaborative code editor to a shared whiteboard or a real-time JSON configuration tool.
+
+## Why OpenOT?
+
+Building real-time collaboration is hard. You have to handle:
+
+- **Concurrency**: What happens when two users type at the same time?
+- **Latency**: How do you keep the UI responsive while waiting for the server?
+- **Offline Support**: How do you queue changes when the internet cuts out?
+- **Consistency**: How do you ensure every client ends up with the exact same state?
+
+OpenOT solves these problems with a **mathematically proven state machine** that handles the complexity of OT, leaving you free to choose your stack.
+
+## Architecture
+
+OpenOT is split into three decoupled packages, allowing you to use only what you need.
+
+### 1. Core (`@open-ot/core`)
+
+The heart of the framework. It defines the `OTType` interface, which allows you to teach OpenOT how to synchronize _any_ data structure.
+
+```typescript
+export interface OTType<Snapshot, Op> {
+  name: string;
+  create(): Snapshot;
+  apply(snapshot: Snapshot, op: Op): Snapshot;
+  transform(opA: Op, opB: Op, side: "left" | "right"): Op;
+  compose(opA: Op, opB: Op): Op;
+}
+```
+
+If you can implement these four functions, you can collaborate on it. We provide a built-in `TextType`, but you can write types for JSON, XML, or your own custom binary format.
+
+### 2. Client (`@open-ot/client`)
+
+The client implements the standard OT state machine to handle the "hard parts" of synchronization. It manages three distinct states to ensure your UI never locks up, even on slow networks:
+
+- **Synchronized**: The client is up to date with the server.
+- **AwaitingConfirm**: The user has made a change, and we are waiting for the server to acknowledge it.
+- **AwaitingWithBuffer**: The user is _continuing_ to type while we are still waiting for the server. OpenOT buffers these changes and composes them into a single operation to send next.
+
+```typescript
+// It handles the complexity so you don't have to
+client.applyLocal(op); // Updates local state immediately (optimistic UI)
+// ... background magic handles sending, buffering, and rebasing ...
+```
+
+### 3. Server (`@open-ot/server`)
+
+The server is a lightweight coordinator. It doesn't care about your database. It uses an `IBackendAdapter` to fetch and store operation history.
+
+```typescript
+const server = new Server(new RedisAdapter(redisUrl));
+```
+
+It handles the "Catch Up" phase: if a client comes online with an old revision, the server transforms their operation against the history of changes they missed, ensuring the document never diverges.
+
+## Bring Your Own Everything
+
+OpenOT is designed to fit into your existing architecture, not replace it.
+
+| Component    | OpenOT Approach                                                                                                   |
+| :----------- | :---------------------------------------------------------------------------------------------------------------- |
+| **Database** | **Pluggable.** Use Redis, Postgres, MongoDB, or Durable Objects. Just implement `getRecord` and `saveOperation`.  |
+| **Network**  | **Agnostic.** Use WebSockets, HTTP/2 SSE, WebRTC, or even email. If you can send a JSON blob, you can use OpenOT. |
+| **Editor**   | **Decoupled.** Bind it to Monaco, CodeMirror, ProseMirror, or a plain `<textarea>`.                               |
+
+## Ready to Build?
+
+Check out the [Quickstart](/docs/quickstart) to build your first collaborative app in under 5 minutes.
