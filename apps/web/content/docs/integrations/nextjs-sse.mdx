@@ -1,0 +1,244 @@
+---
+title: Next.js + SSE
+description: Serverless real-time collaboration with Server-Sent Events and Redis.
+icon: Nextjs
+---
+
+This guide demonstrates how to integrate OpenOT with Next.js App Router using Server-Sent Events (SSE) and Redis. This approach works in serverless environments (like Vercel) by using Redis for both storage and pub/sub broadcasting.
+
+## Prerequisites
+
+```package-install
+npm install @open-ot/core @open-ot/client @open-ot/react @open-ot/server @open-ot/adapter-redis @open-ot/transport-http-sse ioredis
+```
+
+You'll also need a Redis instance. For development, use Docker:
+
+```bash
+docker run -d -p 6379:6379 redis:alpine
+```
+
+For production, consider [Upstash](https://upstash.com/) (serverless Redis) or [Redis Cloud](https://redis.com/try-free/).
+
+## 1. Server Setup
+
+### Redis Singleton
+
+Create a singleton for the Redis-backed OpenOT server.
+
+```typescript title="lib/ot-server.ts"
+import { Server } from "@open-ot/server";
+import { RedisAdapter } from "@open-ot/adapter-redis";
+import { TextType } from "@open-ot/core";
+import Redis from "ioredis";
+
+const globalForOT = global as unknown as {
+  otServer: Server;
+  redis: Redis;
+  redisSub: Redis;
+};
+
+// Create Redis clients
+export const redis =
+  globalForOT.redis ||
+  new Redis(process.env.REDIS_URL || "redis://localhost:6379");
+export const redisSub =
+  globalForOT.redisSub ||
+  new Redis(process.env.REDIS_URL || "redis://localhost:6379");
+
+// Initialize OpenOT Server with Redis backend
+const backend = new RedisAdapter(
+  process.env.REDIS_URL || "redis://localhost:6379"
+);
+export const otServer = globalForOT.otServer || new Server(backend);
+otServer.registerType(TextType);
+
+if (process.env.NODE_ENV !== "production") {
+  globalForOT.otServer = otServer;
+  globalForOT.redis = redis;
+  globalForOT.redisSub = redisSub;
+}
+
+// Initialize demo document (idempotent)
+(async () => {
+  try {
+    await backend.createDocument("demo-doc", "text", "Hello Next.js + Redis!");
+  } catch (e) {
+    // Document already exists
+  }
+})();
+```
+
+### Route Handler with Redis Pub/Sub
+
+Use Redis Pub/Sub to broadcast operations across serverless instances.
+
+```typescript title="app/api/ot/[[...route]]/route.ts"
+import { NextRequest, NextResponse } from "next/server";
+import { otServer, redis, redisSub } from "@/lib/ot-server";
+
+const CHANNEL = "ot:updates";
+
+// Track SSE clients per instance
+const clients = new Set<ReadableStreamDefaultController>();
+
+// Subscribe to Redis pub/sub (once per instance)
+let subscribed = false;
+if (!subscribed) {
+  redisSub.subscribe(CHANNEL);
+  redisSub.on("message", (channel, message) => {
+    if (channel === CHANNEL) {
+      const data = `data: ${message}\n\n`;
+      clients.forEach((controller) => {
+        try {
+          controller.enqueue(new TextEncoder().encode(data));
+        } catch (e) {
+          clients.delete(controller);
+        }
+      });
+    }
+  });
+  subscribed = true;
+}
+
+export async function GET(req: NextRequest) {
+  if (req.nextUrl.pathname.endsWith("/events")) {
+    const stream = new ReadableStream({
+      start(controller) {
+        clients.add(controller);
+        // Send keepalive every 30s to prevent timeout
+        const interval = setInterval(() => {
+          try {
+            controller.enqueue(new TextEncoder().encode(": keepalive\n\n"));
+          } catch (e) {
+            clearInterval(interval);
+            clients.delete(controller);
+          }
+        }, 30000);
+      },
+      cancel() {
+        clients.delete(controller);
+      },
+    });
+
+    return new NextResponse(stream, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no", // Disable nginx buffering
+      },
+    });
+  }
+
+  return new NextResponse("Not Found", { status: 404 });
+}
+
+export async function POST(req: NextRequest) {
+  if (req.nextUrl.pathname.endsWith("/messages")) {
+    try {
+      const msg = await req.json();
+
+      if (msg.type === "op") {
+        const result = await otServer.submitOperation(
+          "demo-doc",
+          msg.op,
+          msg.revision
+        );
+
+        // Broadcast via Redis Pub/Sub
+        const update = JSON.stringify({
+          type: "op",
+          op: result.op,
+          revision: result.revision,
+        });
+
+        await redis.publish(CHANNEL, update);
+
+        return NextResponse.json({ success: true });
+      }
+    } catch (err) {
+      console.error("Failed to process op:", err);
+      return NextResponse.json(
+        { error: "Failed to process operation" },
+        { status: 500 }
+      );
+    }
+  }
+
+  return new NextResponse("Not Found", { status: 404 });
+}
+```
+
+## 2. Client Setup
+
+```tsx title="components/Editor.tsx"
+"use client";
+
+import { useMemo } from "react";
+import { useOTClient } from "@open-ot/react";
+import { HttpSseTransport } from "@open-ot/transport-http-sse";
+import { TextType } from "@open-ot/core";
+
+export function Editor() {
+  const transport = useMemo(
+    () =>
+      new HttpSseTransport("/api/ot", {
+        eventsPath: "/events",
+        messagesPath: "/messages",
+      }),
+    []
+  );
+
+  const { client, snapshot } = useOTClient({
+    type: TextType,
+    initialSnapshot: "Hello Next.js + Redis!",
+    initialRevision: 0,
+    transport: transport,
+  });
+
+  const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const newText = e.target.value;
+
+    // Naive diff (use fast-diff in production)
+    if (newText.startsWith(snapshot)) {
+      const inserted = newText.slice(snapshot.length);
+      client.applyLocal([{ r: snapshot.length }, { i: inserted }]);
+    } else if (snapshot.startsWith(newText)) {
+      const deleted = snapshot.length - newText.length;
+      client.applyLocal([{ r: newText.length }, { d: deleted }]);
+    }
+  };
+
+  return (
+    <div className="space-y-2">
+      <h2 className="text-lg font-semibold">Collaborative Editor</h2>
+      <textarea
+        className="w-full h-64 p-4 border rounded font-mono"
+        value={snapshot}
+        onChange={handleChange}
+      />
+      <p className="text-sm text-muted-foreground">
+        Open in multiple tabs to see real-time sync!
+      </p>
+    </div>
+  );
+}
+```
+
+## 3. Environment Variables
+
+Add to `.env.local`:
+
+```bash
+REDIS_URL=redis://localhost:6379
+# For Upstash: redis://default:xxxxx@xxxxx.upstash.io:6379
+```
+
+## Production Deployment (Vercel)
+
+1.  **Add Redis**: Use Upstash or Redis Cloud. Copy the connection URL.
+2.  **Set Environment Variable**: In Vercel dashboard, add `REDIS_URL`.
+3.  **Deploy**: `vercel deploy`
+
+The Redis Pub/Sub ensures that operations are broadcasted across all serverless function instances, making this truly scalable.

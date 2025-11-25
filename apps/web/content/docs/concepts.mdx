@@ -1,0 +1,205 @@
+---
+title: Core Concepts
+description: Understanding the mental model and architecture behind OpenOT.
+icon: Brain
+---
+
+OpenOT is built on a few core concepts that work together to enable real-time collaboration. This guide explains how they are implemented in the library, diving into the technical details that developers need to know.
+
+## Operational Transformation (OT)
+
+At its heart, OT is about **consistency**. When two users edit the same document at the same time, their operations might conflict. OT provides a way to "transform" these operations so that everyone ends up with the same result (Convergence).
+
+### The Diamond Problem
+
+Consider two clients, Alice and Bob, starting with the same document state $S$.
+
+- Alice generates operation $O_a$.
+- Bob generates operation $O_b$.
+
+If the server applies $O_a$ then $O_b$, the final state is $S \circ O_a \circ O_b$.
+But Bob applied $O_b$ locally first! When he receives $O_a$, he can't just apply it, because $O_a$ was meant for state $S$, not $S \circ O_b$.
+
+We need a transformation function $T(O_a, O_b)$ that produces $O_a'$, which is the version of $O_a$ adapted to apply _after_ $O_b$.
+
+The fundamental property of OT is:
+
+$$
+S \circ O_a \circ T(O_b, O_a) \equiv S \circ O_b \circ T(O_a, O_b)
+$$
+
+This ensures that no matter which order operations arrive, the final document state is identical.
+
+<Mermaid
+  chart={`
+graph TD
+    S((State S)) --> A[Apply Op A]
+    S --> B[Apply Op B]
+    A --> C((State S + A))
+    B --> D((State S + B))
+    C --> E[Apply Transform B, A]
+    D --> F[Apply Transform A, B]
+    E --> G((Final State))
+    F --> G
+`}
+/>
+
+### Conflict Resolution Example
+
+Imagine a document with the text `"ABC"`.
+
+- **User A** types `"X"` at index 0: `Insert(0, "X")`
+- **User B** deletes `"C"` at index 2: `Delete(2, 1)`
+
+**Scenario 1: Server receives A first.**
+
+1. Server applies A: `"XABC"`.
+2. Server receives B. B's op was for `"ABC"`, not `"XABC"`.
+3. Server transforms B against A: $T(B, A)$.
+   - Since A inserted 1 char before B's target (0 < 2), we shift B's index by +1.
+   - Result: `Delete(3, 1)`.
+4. Server applies transformed B: Deletes char at 3 (`"C"`).
+5. Final: `"XAB"`.
+
+**Scenario 2: Server receives B first.**
+
+1. Server applies B: `"AB"`.
+2. Server receives A. A's op was for `"ABC"`.
+3. Server transforms A against B: $T(A, B)$.
+   - B deleted at 2. A inserts at 0.
+   - Since A is before B (0 < 2), A is unaffected.
+   - Result: `Insert(0, "X")`.
+4. Server applies transformed A.
+5. Final: `"XAB"`.
+
+Both paths converge.
+
+## Operations
+
+In OpenOT, changes are not stored as diffs or full snapshots, but as **Operations**. An operation describes _how_ to change the document from one state to the next.
+
+### Text Operations (The `TextType`)
+
+OpenOT implements a standard Retain/Insert/Delete format (compatible with ShareJS/Ot.js types). An operation is an array of components that traverses the document.
+
+```typescript
+// Change "Hello World" -> "Hello Alice World"
+const op = [
+  { r: 6 }, // Retain 6 chars ("Hello ")
+  { i: "Alice " }, // Insert "Alice "
+  { r: 5 }, // Retain 5 chars ("World")
+];
+```
+
+- **Retain (`r`)**: Skip over existing characters. This is crucial for keeping indices aligned. If you don't retain, you are implicitly deleting.
+- **Insert (`i`)**: Add new characters at the current position.
+- **Delete (`d`)**: Remove characters at the current position.
+
+**Composition**:
+Operations can be composed. If you have $Op_1$ (A -> B) and $Op_2$ (B -> C), you can merge them into $Op_{1,2}$ (A -> C). This is vital for performance—clients can squash buffered keystrokes into a single packet.
+
+### Sequential Ordering & Versioning
+
+Every operation is applied to a specific version of the document. We track this with a monotonically increasing **Revision Number**.
+
+1. **Rev 0**: `""` (Empty)
+2. **Rev 1**: `"Hello"` (Op: Insert "Hello")
+3. **Rev 2**: `"Hello World"` (Op: Insert " World")
+
+When a client sends an operation, it includes the revision it _thinks_ is current (e.g., Rev 5).
+
+- If Server is at Rev 5: **Success**. Apply op, bump to Rev 6.
+- If Server is at Rev 6: **Conflict**. The client missed one operation. The server transforms the incoming op against the missing op (Rev 5 -> 6) before applying.
+
+<Mermaid
+  chart={`
+sequenceDiagram
+    participant Client
+    participant Server
+    Client->>Server: Op A (Rev 5)
+    Note right of Server: Current Rev: 5
+    Server->>Server: Apply Op A -> Rev 6
+    Server-->>Client: Ack (Rev 6)
+    
+    Client->>Server: Op B (Rev 5)
+    Note right of Server: Current Rev: 6
+    Note right of Server: Conflict! Rev 5 < 6
+    Server->>Server: Transform Op B vs Op A
+    Server->>Server: Apply Op B' -> Rev 7
+    Server-->>Client: Ack (Rev 7) + Op B'
+`}
+/>
+
+## Presence & Awareness
+
+Presence refers to ephemeral user state: cursors, selections, and names.
+
+### Why it’s separate from Document State
+
+1.  **High Frequency**: Cursors move on every keystroke or mouse click. Persisting this to a database would crush write throughput.
+2.  **Low Criticality**: If a cursor update is dropped or arrives out of order, it's not a data loss event.
+3.  **No History**: You rarely need to know where someone's cursor was 5 minutes ago.
+
+In OpenOT, presence is typically broadcasted via the same transport (WebSocket) but bypasses the persistence layer.
+
+### Transforming Cursors
+
+However, presence _does_ relate to OT. If I am at index 10, and you insert text at index 0, my cursor _visually_ stays in the same place, but its _index_ must shift to 15.
+
+OpenOT provides utilities to transform "Selection Ranges" against operations, ensuring that remote cursors don't jump around incorrectly when text is edited.
+
+## Storage & Persistence
+
+OpenOT uses a "Log + Snapshot" model, similar to database write-ahead logs (WAL).
+
+### 1. Operation Log (The Source of Truth)
+
+Every applied operation is appended to an ordered log.
+`[Op0, Op1, Op2, ... OpN]`
+
+This allows:
+
+- **Time Travel**: You can reconstruct the document at any point in time.
+- **Catch-up**: If a client goes offline at Rev 10 and comes back at Rev 50, they just request Ops 11-50.
+
+### 2. Snapshots (The Optimization)
+
+Replaying 100,000 operations to load a document is too slow. We periodically save the full document state.
+
+- **Strategy**: Save a snapshot every ~100 revisions.
+- **Loading**: Fetch the latest snapshot (e.g., Rev 500) + any subsequent ops (501-505).
+
+### Pluggable Backends
+
+OpenOT defines an `IBackendAdapter` interface. You can swap storage without changing application logic.
+
+- **Redis**: Fast, in-memory. Great for active documents and pub/sub.
+- **Postgres**: Reliable, relational. Good for long-term storage.
+- **S3/Blob**: Excellent for storing large snapshots cheaply.
+
+## Transport
+
+OpenOT is **network-agnostic**. The core logic is pure data manipulation. The `TransportAdapter` interface abstracts the communication layer.
+
+```typescript
+interface TransportAdapter {
+  send(message: any): void;
+  connect(onReceive: (message: any) => void): void;
+}
+```
+
+### Common Implementations
+
+1.  **WebSockets (Stateful)**:
+    - Best for real-time.
+    - Server pushes updates immediately.
+    - Used in the default `@open-ot/transport-websocket`.
+
+2.  **HTTP / Server-Sent Events (Stateless)**:
+    - Good for serverless (Lambda/Edge) where keeping a socket open is expensive or impossible.
+    - Client POSTs operations.
+    - Client listens to an SSE stream for updates.
+
+3.  **Peer-to-Peer (WebRTC)**:
+    - Serverless coordination.
+    - Harder to guarantee consistency (requires a decentralized consensus or a specific OT variant like TP2, though OpenOT primarily targets central-authority OT).

@@ -98,6 +98,32 @@ describe("HttpSseTransport", () => {
     });
   });
 
+  it("should include custom headers in POST request", async () => {
+    const customTransport = new HttpSseTransport("http://localhost:3000", {
+      headers: { "X-Custom-Auth": "secret" },
+    });
+
+    // Mock connect for this instance
+    const esMock = new MockEventSource("http://localhost:3000/events");
+    vi.spyOn(global, "EventSource").mockImplementation(() => esMock as any);
+
+    await customTransport.connect(() => {});
+
+    const msg = { type: "update", payload: 123 };
+    await customTransport.send(msg);
+
+    expect(mockFetch).toHaveBeenCalledWith("http://localhost:3000/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Custom-Auth": "secret",
+      },
+      body: JSON.stringify(msg),
+    });
+
+    await customTransport.disconnect();
+  });
+
   it("should throw if send fails", async () => {
     await transport.connect(() => {});
 

@@ -240,7 +240,7 @@ export function Packages() {
                             npm <ChevronRight className="size-3" />
                           </a>
                           <a
-                            href={`https://github.com/your-org/openot/tree/main/packages/${pkg.name.split("/")[1]}`}
+                            href={`https://github.com/Shaharyar-developer/open-ot/tree/main/packages/${pkg.name.split("/")[1]}`}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border/50 bg-background/50 hover:bg-background hover:border-primary/30 transition-all text-xs font-medium"

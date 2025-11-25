@@ -21,12 +21,14 @@ declare const EventSource: {
 export interface HttpSseTransportOptions {
   eventsPath?: string;
   messagesPath?: string;
+  headers?: Record<string, string>;
 }
 
 export class HttpSseTransport implements TransportAdapter<unknown> {
   private baseUrl: string;
   private eventsPath: string;
   private messagesPath: string;
+  private headers: Record<string, string>;
   private eventSource: IEventSource | null = null;
   private onReceiveCallback: ((msg: unknown) => void) | null = null;
   private isConnected: boolean = false;
@@ -36,6 +38,7 @@ export class HttpSseTransport implements TransportAdapter<unknown> {
     this.baseUrl = baseUrl.replace(/\/$/, "");
     this.eventsPath = options.eventsPath || "/events";
     this.messagesPath = options.messagesPath || "/messages";
+    this.headers = options.headers || {};
   }
 
   connect(onReceive: (msg: unknown) => void): Promise<void> {
@@ -53,6 +56,8 @@ export class HttpSseTransport implements TransportAdapter<unknown> {
       const url = `${this.baseUrl}${this.eventsPath}`;
 
       // We assume EventSource is available globally (browser) or polyfilled (Node tests)
+      // Note: Standard EventSource does not support custom headers.
+      // Authentication usually relies on cookies or query params.
       this.eventSource = new EventSource(url);
 
       this.eventSource.onopen = () => {
@@ -94,6 +99,7 @@ export class HttpSseTransport implements TransportAdapter<unknown> {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        ...this.headers,
       },
       body: JSON.stringify(msg),
     });

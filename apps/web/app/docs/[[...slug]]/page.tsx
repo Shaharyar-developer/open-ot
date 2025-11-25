@@ -9,10 +9,13 @@ import { notFound } from "next/navigation";
 import { getMDXComponents } from "@/mdx-components";
 import type { Metadata } from "next";
 import { createRelativeLink } from "fumadocs-ui/mdx";
+import { Suspense } from "react";
 
 export default async function Page(props: PageProps<"/docs/[[...slug]]">) {
   const params = await props.params;
   const page = source.getPage(params.slug);
+  const pageTree = source.getPageTree();
+
   if (!page) notFound();
   // @ts-expect-error mdx types
   const MDX = page.data.body;
@@ -24,14 +27,16 @@ export default async function Page(props: PageProps<"/docs/[[...slug]]">) {
         <div className="absolute w-[40%] aspect-square rounded-full bg-radial-[at_top_center] -top-1/3 from-primary/30 blur-3xl" />
         <DocsTitle className="text-primary">{page.data.title}</DocsTitle>
         <DocsDescription>{page.data.description}</DocsDescription>
-        <DocsBody className="">
-          <MDX
-            components={getMDXComponents({
-              // this allows you to link to other pages with relative file paths
-              a: createRelativeLink(source, page),
-            })}
-          />
-        </DocsBody>
+        <Suspense>
+          <DocsBody className="">
+            <MDX
+              components={getMDXComponents({
+                // this allows you to link to other pages with relative file paths
+                a: createRelativeLink(source, page),
+              })}
+            />
+          </DocsBody>
+        </Suspense>
       </div>
     </DocsPage>
   );

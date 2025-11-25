@@ -1,4 +1,4 @@
-import { Github } from "lucide-react";
+import { Github, Link } from "lucide-react";
 import { Separator } from "@open-ot/ui/components/separator";
 
 export function Footer() {
@@ -23,12 +23,12 @@ export function Footer() {
               <div className="space-y-3">
                 <p className="text-sm font-medium">Resources</p>
                 <nav className="flex flex-col gap-2 text-sm text-muted-foreground">
-                  <a
+                  <Link
                     href="/docs"
                     className="hover:text-foreground transition-colors"
                   >
                     Documentation
-                  </a>
+                  </Link>
                   <a
                     href="https://www.npmjs.com/package/@open-ot/core"
                     target="_blank"
@@ -50,7 +50,7 @@ export function Footer() {
                 <p className="text-sm font-medium">Community</p>
                 <nav className="flex flex-col gap-2 text-sm text-muted-foreground">
                   <a
-                    href="https://github.com/your-org/openot"
+                    href="https://github.com/Shaharyar-developer/open-ot"
                     target="_blank"
                     rel="noopener noreferrer"
                     className="hover:text-foreground transition-colors flex items-center gap-1.5"
@@ -59,7 +59,7 @@ export function Footer() {
                     GitHub
                   </a>
                   <a
-                    href="https://github.com/your-org/openot/issues"
+                    href="https://github.com/Shaharyar-developer/open-ot/issues"
                     target="_blank"
                     rel="noopener noreferrer"
                     className="hover:text-foreground transition-colors"

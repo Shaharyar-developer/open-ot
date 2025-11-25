@@ -7,6 +7,6 @@ const create = browser<typeof Config, import("fumadocs-mdx/runtime/types").Inter
   }
 }>();
 const browserCollections = {
-  docs: create.doc("docs", {"introduction.mdx": () => import("../content/docs/introduction.mdx?collection=docs"), }),
+  docs: create.doc("docs", {"concepts.mdx": () => import("../content/docs/concepts.mdx?collection=docs"), "getting-started.mdx": () => import("../content/docs/getting-started.mdx?collection=docs"), "introduction.mdx": () => import("../content/docs/introduction.mdx?collection=docs"), "integrations/nextjs-sse.mdx": () => import("../content/docs/integrations/nextjs-sse.mdx?collection=docs"), "integrations/nextjs-websocket.mdx": () => import("../content/docs/integrations/nextjs-websocket.mdx?collection=docs"), "integrations/react-ws.mdx": () => import("../content/docs/integrations/react-ws.mdx?collection=docs"), }),
 };
 export default browserCollections;

@@ -122,7 +122,7 @@ export function Hero() {
                 className="hover:scale-105 transition-transform"
               >
                 <a
-                  href="https://github.com/your-org/openot"
+                  href="https://github.com/Shaharyar-developer/open-ot"
                   target="_blank"
                   rel="noopener noreferrer"
                   className="flex items-center gap-2"

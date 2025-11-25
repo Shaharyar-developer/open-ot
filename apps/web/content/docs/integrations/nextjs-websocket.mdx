@@ -1,0 +1,258 @@
+---
+title: Next.js + WebSockets
+description: Real-time collaboration in Next.js using a custom server with Redis.
+icon: Nextjs
+---
+
+Next.js App Router is primarily designed for serverless HTTP request/response cycles. To use WebSockets, you need a long-running process. This guide shows how to set up a **Custom Server** with Redis for production-ready WebSocket support.
+
+<Callout title="Warning!" type="warning">
+  This approach requires a Node.js environment (e.g., VPS, Docker, Railway,
+  Render). It **will not work** on Vercel's standard serverless platform. For
+  Vercel, use [Next.js + SSE](/docs/integrations/nextjs-sse) instead.
+</Callout>
+
+## Prerequisites
+
+```package-install
+npm install @open-ot/core @open-ot/client @open-ot/react @open-ot/server @open-ot/adapter-redis @open-ot/transport-websocket ws tsx ioredis
+```
+
+You'll also need Redis:
+
+```bash
+docker run -d -p 6379:6379 redis:alpine
+```
+
+## 1. Custom Server Setup
+
+Create a `server.ts` file in your project root.
+
+```typescript title="server.ts"
+import { createServer } from "http";
+import { parse } from "url";
+import next from "next";
+import { WebSocketServer } from "ws";
+import { Server } from "@open-ot/server";
+import { RedisAdapter } from "@open-ot/adapter-redis";
+import { TextType } from "@open-ot/core";
+import Redis from "ioredis";
+
+const dev = process.env.NODE_ENV !== "production";
+const app = next({ dev });
+const handle = app.getRequestHandler();
+
+// 1. Initialize Redis
+const redis = new Redis(process.env.REDIS_URL || "redis://localhost:6379");
+const redisSub = new Redis(process.env.REDIS_URL || "redis://localhost:6379");
+
+// 2. Initialize OpenOT with Redis backend
+const backend = new RedisAdapter(
+  process.env.REDIS_URL || "redis://localhost:6379"
+);
+const otServer = new Server(backend);
+otServer.registerType(TextType);
+
+// Create demo document
+(async () => {
+  try {
+    await backend.createDocument(
+      "demo-doc",
+      "text",
+      "Hello Custom Server + Redis!"
+    );
+  } catch (e) {
+    // Document exists
+  }
+})();
+
+app.prepare().then(() => {
+  const server = createServer((req, res) => {
+    const parsedUrl = parse(req.url!, true);
+    handle(req, res, parsedUrl);
+  });
+
+  // 3. Attach WebSocket Server
+  const wss = new WebSocketServer({ server });
+
+  // 4. Subscribe to Redis pub/sub for broadcasting
+  const CHANNEL = "ot:updates";
+  redisSub.subscribe(CHANNEL);
+
+  redisSub.on("message", (channel, message) => {
+    if (channel === CHANNEL) {
+      wss.clients.forEach((client) => {
+        if (client.readyState === 1) {
+          client.send(message);
+        }
+      });
+    }
+  });
+
+  wss.on("connection", (ws) => {
+    console.log("Client connected");
+
+    ws.on("message", async (data) => {
+      try {
+        const msg = JSON.parse(data.toString());
+
+        if (msg.type === "op") {
+          const result = await otServer.submitOperation(
+            "demo-doc",
+            msg.op,
+            msg.revision
+          );
+
+          // Send ACK to sender
+          ws.send(JSON.stringify({ type: "ack" }));
+
+          // Broadcast via Redis (reaches all server instances)
+          const update = JSON.stringify({
+            type: "op",
+            op: result.op,
+            revision: result.revision,
+          });
+
+          await redis.publish(CHANNEL, update);
+        }
+      } catch (e) {
+        console.error("Error processing message:", e);
+      }
+    });
+
+    ws.on("close", () => {
+      console.log("Client disconnected");
+    });
+  });
+
+  const PORT = process.env.PORT || 3000;
+  server.listen(PORT, () => {
+    console.log(`> Ready on http://localhost:${PORT}`);
+  });
+});
+```
+
+## 2. Update Scripts
+
+```json title="package.json"
+{
+  "scripts": {
+    "dev": "tsx server.ts",
+    "build": "next build",
+    "start": "NODE_ENV=production tsx server.ts"
+  }
+}
+```
+
+## 3. Client Setup
+
+```tsx title="components/Editor.tsx"
+"use client";
+
+import { useMemo } from "react";
+import { useOTClient } from "@open-ot/react";
+import { WebSocketTransport } from "@open-ot/transport-websocket";
+import { TextType } from "@open-ot/core";
+
+export function Editor() {
+  const transport = useMemo(() => {
+    const protocol =
+      typeof window !== "undefined" && window.location.protocol === "https:"
+        ? "wss:"
+        : "ws:";
+    const host =
+      typeof window !== "undefined" ? window.location.host : "localhost:3000";
+    return new WebSocketTransport(`${protocol}//${host}`);
+  }, []);
+
+  const { client, snapshot } = useOTClient({
+    type: TextType,
+    initialSnapshot: "Hello Custom Server + Redis!",
+    initialRevision: 0,
+    transport: transport,
+  });
+
+  const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const newText = e.target.value;
+
+    // Naive diff (use fast-diff in production)
+    if (newText.startsWith(snapshot)) {
+      const inserted = newText.slice(snapshot.length);
+      client.applyLocal([{ r: snapshot.length }, { i: inserted }]);
+    } else if (snapshot.startsWith(newText)) {
+      const deleted = snapshot.length - newText.length;
+      client.applyLocal([{ r: newText.length }, { d: deleted }]);
+    }
+  };
+
+  return (
+    <div className="space-y-2">
+      <h2 className="text-lg font-semibold">
+        Collaborative Editor (WebSocket)
+      </h2>
+      <textarea
+        className="w-full h-64 p-4 border rounded font-mono"
+        value={snapshot}
+        onChange={handleChange}
+      />
+      <p className="text-sm text-muted-foreground">
+        Open in multiple tabs to see real-time sync!
+      </p>
+    </div>
+  );
+}
+```
+
+## 4. Environment Variables
+
+```bash title=".env.local"
+REDIS_URL=redis://localhost:6379
+PORT=3000
+```
+
+## Production Deployment
+
+### Option 1: Railway / Render
+
+1.  **Add Redis**: Use their managed Redis add-on.
+2.  **Deploy**: Connect your Git repo and set `REDIS_URL`.
+3.  **Start Command**: `npm run start`
+
+### Option 2: Docker
+
+```dockerfile title="Dockerfile"
+FROM node:20-alpine
+
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+
+EXPOSE 3000
+CMD ["npm", "start"]
+```
+
+Deploy with Docker Compose including Redis:
+
+```yaml title="docker-compose.yml"
+version: "3.8"
+services:
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+```
+
+## Why Redis Pub/Sub?
+
+If you scale to multiple server instances (e.g., behind a load balancer), WebSocket connections are sticky to one instance. Redis Pub/Sub ensures that operations are broadcasted across **all** instances, keeping all clients in sync.

@@ -28,6 +28,8 @@ export class OTClient<Snapshot, Op> {
   // Buffer operation (local edits while waiting for ACK)
   private bufferOp: Op | null = null;
 
+  private listeners: Set<(snapshot: Snapshot) => void> = new Set();
+
   constructor(options: OTClientOptions<Snapshot, Op>) {
     this.type = options.type;
     this.revision = options.initialRevision;
@@ -38,6 +40,17 @@ export class OTClient<Snapshot, Op> {
       this.transport = options.transport;
       this.transport.connect(this.handleMessage.bind(this));
     }
+  }
+
+  public subscribe(callback: (snapshot: Snapshot) => void): () => void {
+    this.listeners.add(callback);
+    return () => {
+      this.listeners.delete(callback);
+    };
+  }
+
+  private notify() {
+    this.listeners.forEach((listener) => listener(this.snapshot));
   }
 
   private handleMessage(msg: unknown) {
@@ -66,6 +79,7 @@ export class OTClient<Snapshot, Op> {
    */
   public applyLocal(op: Op): Op | null {
     this.snapshot = this.type.apply(this.snapshot, op);
+    this.notify();
 
     switch (this.state) {
       case "Synchronized":
@@ -122,25 +136,24 @@ export class OTClient<Snapshot, Op> {
   public applyRemote(op: Op): Op {
     this.revision++;
 
+    let appliedOp = op;
+
     switch (this.state) {
       case "Synchronized":
         this.snapshot = this.type.apply(this.snapshot, op);
-        return op;
+        break;
 
       case "AwaitingConfirm": {
         if (!this.pendingOp)
           throw new Error("Invalid state: AwaitingConfirm but no pendingOp");
-
-        // Transform the pending local operation against the incoming remote operation.
-        // The remote operation is considered canonical, so the pending operation must be rebased
-        // to apply after the remote operation.
 
         const pendingPrime = this.type.transform(this.pendingOp, op, "right");
         const remotePrime = this.type.transform(op, this.pendingOp, "left");
 
         this.pendingOp = pendingPrime;
         this.snapshot = this.type.apply(this.snapshot, remotePrime);
-        return remotePrime;
+        appliedOp = remotePrime;
+        break;
       }
 
       case "AwaitingWithBuffer": {
@@ -168,10 +181,13 @@ export class OTClient<Snapshot, Op> {
         this.pendingOp = pendingPrime2;
         this.bufferOp = bufferPrime;
         this.snapshot = this.type.apply(this.snapshot, remotePrime3);
-
-        return remotePrime3;
+        appliedOp = remotePrime3;
+        break;
       }
     }
+
+    this.notify();
+    return appliedOp;
   }
 
   public getSnapshot(): Snapshot {

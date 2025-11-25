@@ -1,0 +1,155 @@
+---
+title: Getting Started
+description: Build your first collaborative app in under 2 minutes.
+icon: Play
+---
+
+This guide will walk you through installing OpenOT and building a simple collaborative text editor.
+
+## 1. Install
+
+Install the core package and the client. We'll also add the WebSocket transport for real-time sync.
+
+```package-install
+npm install @open-ot/core @open-ot/client @open-ot/transport-websocket
+```
+
+## 2. Basic Document Usage
+
+Before we add a server, let's look at how to manipulate a document locally. OpenOT uses **Operational Transformation** to safely modify data.
+
+### Create a Document
+
+OpenOT supports different data types. We'll use `TextType` for plain text.
+
+```typescript
+import { TextType } from "@open-ot/core";
+
+// 1. Create an initial empty snapshot
+let doc = TextType.create(); // ""
+```
+
+### Apply Operations
+
+Instead of setting the value directly (e.g., `doc = "Hello"`), we apply **operations**. This allows us to merge concurrent changes later.
+
+```typescript
+// 2. Define an operation: Insert "Hello"
+const op1 = [{ i: "Hello" }];
+
+// 3. Apply the operation
+doc = TextType.apply(doc, op1);
+console.log(doc); // "Hello"
+
+// 4. Make another change: Insert " World" at index 5
+const op2 = [
+  { r: 5 }, // Retain first 5 chars ("Hello")
+  { i: " World" }, // Insert " World"
+];
+
+doc = TextType.apply(doc, op2);
+console.log(doc); // "Hello World"
+```
+
+### Listen for Updates
+
+In a real app, you don't manage the loop yourself. The `OTClient` handles state and notifies you when the document changes.
+
+```typescript
+import { OTClient } from "@open-ot/client";
+
+const client = new OTClient({
+  type: TextType,
+  initialSnapshot: "Hello World",
+  initialRevision: 0,
+});
+
+// Apply a local change (e.g., user typed in <textarea>)
+const op = client.applyLocal([{ r: 11 }, { i: "!" }]);
+
+console.log(client.getSnapshot()); // "Hello World!"
+```
+
+## 3. Sync with Server Skeleton
+
+To make it collaborative, we need to sync with a server. OpenOT provides a `WebSocketTransport` to handle the networking.
+
+### Client Setup
+
+```typescript
+import { OTClient } from "@open-ot/client";
+import { WebSocketTransport } from "@open-ot/transport-websocket";
+import { TextType } from "@open-ot/core";
+
+// 1. Connect to your WebSocket server
+const transport = new WebSocketTransport("ws://localhost:3000");
+
+// 2. Initialize Client
+const client = new OTClient({
+  type: TextType,
+  initialSnapshot: "", // In a real app, fetch this from an API first
+  initialRevision: 0,
+  transport: transport,
+});
+
+// 3. That's it!
+// Any local changes are automatically sent to the server.
+// Any remote changes are automatically applied to the client.
+client.applyLocal([{ i: "Collaborative Text" }]);
+```
+
+### Server Skeleton
+
+Here is a minimal server implementation using `ws` and `@open-ot/server`.
+
+```typescript
+import { WebSocketServer } from "ws";
+import { Server, MemoryBackend } from "@open-ot/server";
+import { TextType } from "@open-ot/core";
+
+// 1. Setup OpenOT Server
+const backend = new MemoryBackend();
+const otServer = new Server(backend);
+otServer.registerType(TextType);
+
+// Initialize a document
+await backend.createDocument("doc-1", "text", "");
+
+// 2. Setup WebSocket Server
+const wss = new WebSocketServer({ port: 3000 });
+
+wss.on("connection", (ws) => {
+  ws.on("message", async (data) => {
+    const msg = JSON.parse(data.toString());
+
+    if (msg.type === "op") {
+      // Process operation
+      const result = await otServer.submitOperation(
+        "doc-1", // Hardcoded for demo
+        msg.op,
+        msg.revision
+      );
+
+      // Acknowledge sender
+      ws.send(JSON.stringify({ type: "ack" }));
+
+      // Broadcast to others
+      const update = JSON.stringify({
+        type: "op",
+        op: result.op,
+        revision: result.revision,
+      });
+
+      wss.clients.forEach((c) => {
+        if (c !== ws && c.readyState === 1) c.send(update);
+      });
+    }
+  });
+});
+```
+
+## Next Steps
+
+- Explore the [Core Concepts](/docs/core-concepts) to understand how OT works.
+- Check out the [React Integration](/docs/guides/react) guide.
+- Learn about [Custom Types](/docs/advanced/custom-types).

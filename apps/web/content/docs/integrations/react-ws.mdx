@@ -1,0 +1,158 @@
+---
+title: React + WebSockets
+description: Build a real-time collaborative text editor with React and OpenOT.
+icon: React
+---
+
+This guide demonstrates how to integrate OpenOT with React using the built-in WebSocket transport and the `useOTClient` hook.
+
+## Prerequisites
+
+Ensure you have the necessary packages installed:
+
+```package-install
+npm install @open-ot/core @open-ot/client @open-ot/react @open-ot/transport-websocket ws
+```
+
+## 1. Server Setup
+
+First, let's create a simple WebSocket server. We'll use the `MemoryBackend` for simplicity, but you can swap this for Redis later.
+
+```typescript title="server.ts"
+import { WebSocketServer } from "ws";
+import { Server, MemoryBackend } from "@open-ot/server";
+import { TextType } from "@open-ot/core";
+
+// 1. Initialize OpenOT Server
+const backend = new MemoryBackend();
+const otServer = new Server(backend);
+otServer.registerType(TextType);
+
+// Create a document to collaborate on
+await backend.createDocument("demo-doc", "text", "Hello OpenOT!");
+
+// 2. Start WebSocket Server
+const wss = new WebSocketServer({ port: 3001 });
+
+wss.on("connection", (ws) => {
+  console.log("Client connected");
+
+  ws.on("message", async (data) => {
+    try {
+      const msg = JSON.parse(data.toString());
+
+      if (msg.type === "op") {
+        // Process the operation
+        const result = await otServer.submitOperation(
+          "demo-doc",
+          msg.op,
+          msg.revision
+        );
+
+        // Acknowledge the sender
+        ws.send(JSON.stringify({ type: "ack" }));
+
+        // Broadcast to all other clients
+        const update = JSON.stringify({
+          type: "op",
+          op: result.op,
+          revision: result.revision,
+        });
+
+        wss.clients.forEach((client) => {
+          if (client !== ws && client.readyState === 1) {
+            client.send(update);
+          }
+        });
+      }
+    } catch (err) {
+      console.error("Error processing message:", err);
+    }
+  });
+});
+
+console.log("Server running on ws://localhost:3001");
+```
+
+## 2. React Client
+
+OpenOT provides a `useOTClient` hook to make React integration seamless. It handles initialization, subscription to updates, and cleanup.
+
+```tsx title="CollaborativeEditor.tsx"
+import { useMemo } from "react";
+import { useOTClient } from "@open-ot/react";
+import { WebSocketTransport } from "@open-ot/transport-websocket";
+import { TextType } from "@open-ot/core";
+
+export function CollaborativeEditor() {
+  // 1. Initialize Transport
+  // Use useMemo to ensure we don't recreate the transport on every render
+  const transport = useMemo(
+    () => new WebSocketTransport("ws://localhost:3001"),
+    []
+  );
+
+  // 2. Use the Hook
+  const { client, snapshot } = useOTClient({
+    type: TextType,
+    initialSnapshot: "Hello OpenOT!", // In production, fetch this first!
+    initialRevision: 0,
+    transport: transport,
+  });
+
+  const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const newText = e.target.value;
+
+    // Calculate the diff (naive implementation for demo)
+    // In production, use a diffing library like `fast-diff`
+    const op = naiveDiff(snapshot, newText);
+
+    if (op) {
+      client.applyLocal(op);
+    }
+  };
+
+  return (
+    <div className="p-4 border rounded-lg">
+      <h3 className="text-lg font-bold mb-2">Collaborative Editor</h3>
+      <textarea
+        className="w-full h-40 p-2 border rounded bg-background text-foreground"
+        value={snapshot}
+        onChange={handleChange}
+      />
+      <p className="text-sm text-muted-foreground mt-2">
+        Open this in two tabs to see it sync!
+      </p>
+    </div>
+  );
+}
+
+// Simple helper to generate an Insert/Delete op from two strings
+function naiveDiff(oldText: string, newText: string) {
+  if (newText.startsWith(oldText)) {
+    // Append
+    const inserted = newText.slice(oldText.length);
+    return [{ r: oldText.length }, { i: inserted }];
+  } else if (oldText.startsWith(newText)) {
+    // Delete from end
+    const deletedCount = oldText.length - newText.length;
+    return [{ r: newText.length }, { d: deletedCount }];
+  }
+
+  // Full replace fallback
+  return [{ d: oldText.length }, { i: newText }];
+}
+```
+
+## 3. Running the Demo
+
+1.  Start the server: `npx tsx server.ts`
+2.  Start your React app.
+3.  Open the page in two browser windows.
+4.  Type in one window and watch it appear in the other!
+
+## Next Steps
+
+- **Robust Diffing**: Use [`fast-diff`](https://github.com/jhchen/fast-diff) to generate operations for edits anywhere in the text.
+- **Cursor Sync**: Add presence support to show where other users are typing.
+- **Persistence**: Switch `MemoryBackend` to `RedisBackend` to save data between server restarts.
