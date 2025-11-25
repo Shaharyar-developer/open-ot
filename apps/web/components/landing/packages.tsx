@@ -172,7 +172,7 @@ export function Packages() {
                     {category.packages.map((pkg, pkgIndex) => (
                       <div
                         key={pkg.name}
-                        className="group relative p-6 first:rounded-t-3xl last:rounded-b-3xl border border-border/50 bg-card/50 backdrop-blur-sm transition-all duration-300 hover:shadow-lg hover:border-primary/30 flex items-center justify-between rounded group"
+                        className="group relative p-3 sm:p-6 first:rounded-t-3xl last:rounded-b-3xl border border-border/50 bg-card/50 backdrop-blur-sm transition-all duration-300 hover:shadow-lg hover:border-primary/30 flex flex-col sm:flex-row sm:items-center sm:justify-between rounded group gap-3"
                         style={{
                           animationDelay: `${categoryIndex * 100 + pkgIndex * 50}ms`,
                         }}
@@ -230,7 +230,7 @@ export function Packages() {
                           </div>
                         </div>
                         {/* Right: Links */}
-                        <div className="flex md:flex-col gap-2 text-sm md:items-end relative z-50">
+                        <div className="flex md:flex-col gap-2 text-sm md:items-end relative z-50 ml-auto">
                           <a
                             href={`https://www.npmjs.com/package/${pkg.name}`}
                             target="_blank"
