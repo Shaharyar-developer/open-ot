@@ -33,12 +33,12 @@ export default function ClerkTOCItems({
       const d: string[] = [];
       for (let i = 0; i < items.length; i++) {
         const element: HTMLElement | null = container.querySelector(
-          `a[href="#${items[i].url.slice(1)}"]`,
+          `a[href="#${items[i]!.url.slice(1)}"]`
         );
         if (!element) continue;
 
         const styles = getComputedStyle(element);
-        const offset = getLineOffset(items[i].depth) + 1,
+        const offset = getLineOffset(items[i]!.depth) + 1,
           top = element.offsetTop + parseFloat(styles.paddingTop),
           bottom =
             element.offsetTop +

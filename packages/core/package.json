@@ -9,7 +9,8 @@
   },
   "private": false,
   "scripts": {
-    "test": "vitest run"
+    "test": "vitest run",
+    "build": "rm -rf dist && bun build src/index.ts --outdir dist && tsc --emitDeclarationOnly --outFile dist/index.d.ts && bun run scripts/dist-package.json.ts && cp README.md dist/README.md"
   },
   "devDependencies": {
     "@open-ot/typescript-config": "workspace:*",

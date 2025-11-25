@@ -20,8 +20,8 @@ export default async function Page(props: PageProps<"/docs/[[...slug]]">) {
   return (
     // @ts-expect-error mdx types
     <DocsPage toc={page.data.toc} full={page.data.full}>
-      <div className="p-4 relative overflow-clip rounded-3xl ">
-        <div className="absolute w-1/2 aspect-square rounded-full bg-radial-[at_top_left] from-primary/20 blur-3xl" />
+      <div className="p-4 rounded-3xl ">
+        <div className="absolute w-[40%] aspect-square rounded-full bg-radial-[at_top_center] -top-1/3 from-primary/30 blur-3xl" />
         <DocsTitle className="text-primary">{page.data.title}</DocsTitle>
         <DocsDescription>{page.data.description}</DocsDescription>
         <DocsBody className="">

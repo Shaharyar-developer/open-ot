@@ -16,7 +16,10 @@
   "devDependencies": {
     "@open-ot/eslint-config": "workspace:*",
     "@open-ot/typescript-config": "workspace:*",
+    "@types/semver": "^7.7.1",
+    "enquirer": "^2.4.1",
     "prettier": "^3.6.2",
+    "semver": "^7.7.3",
     "turbo": "^2.5.5",
     "typescript": "5.7.3"
   },

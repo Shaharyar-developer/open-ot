@@ -17,6 +17,10 @@
       {
         "name": "next"
       }
+    ],
+    "lib": [
+      "ES2024",
+      "DOM"
     ]
   },
   "include": [
