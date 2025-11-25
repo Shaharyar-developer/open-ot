@@ -7,7 +7,7 @@ import {
   DialogContent,
   DialogTitle,
   DialogTrigger,
-} from "@workspace/ui/components/dialog";
+} from "@open-ot/ui/components/dialog";
 
 export function Mermaid({ chart }: { chart: string }) {
   const [mounted, setMounted] = useState(false);

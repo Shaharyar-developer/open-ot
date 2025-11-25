@@ -7,6 +7,10 @@
   "exports": {
     ".": "./src/index.ts"
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Shaharyar-developer/open-ot"
+  },
   "private": false,
   "scripts": {
     "test": "vitest run",

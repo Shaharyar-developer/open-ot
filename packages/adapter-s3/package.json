@@ -4,6 +4,14 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "private": false,
+  "scripts": {
+    "test": "vitest run",
+    "build": "rm -rf dist && bun build src/index.ts --outdir dist && tsc --emitDeclarationOnly --outFile dist/index.d.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Shaharyar-developer/open-ot"
+  },
   "dependencies": {
     "@open-ot/server": "workspace:*",
     "@aws-sdk/client-s3": "^3.0.0"
@@ -15,8 +23,5 @@
     "@types/node": "^20.0.0",
     "aws-sdk-client-mock": "^3.0.0",
     "@aws-sdk/util-stream-node": "^3.0.0"
-  },
-  "scripts": {
-    "test": "vitest run"
   }
 }

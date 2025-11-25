@@ -8,6 +8,10 @@
   "scripts": {
     "build": "rm -rf dist && bun build src/index.ts --outdir dist && tsc --emitDeclarationOnly --outFile dist/index.d.ts"
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Shaharyar-developer/open-ot"
+  },
   "devDependencies": {
     "@open-ot/typescript-config": "workspace:*",
     "@types/react": "^18.3.3",
