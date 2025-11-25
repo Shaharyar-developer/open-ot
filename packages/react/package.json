@@ -6,7 +6,7 @@
   "types": "dist/index.d.ts",
   "private": false,
   "scripts": {
-    "build": "rm -rf dist && bun build src/index.ts --outdir dist && tsc --emitDeclarationOnly --outFile dist/index.d.ts"
+    "build": "rm -rf dist && bun build --target node src/index.ts --outdir dist && tsc --emitDeclarationOnly --outFile dist/index.d.ts && bun run scripts/dist-package.json.ts && cp README.md dist/README.md"
   },
   "repository": {
     "type": "git",
@@ -14,7 +14,8 @@
   },
   "devDependencies": {
     "@open-ot/typescript-config": "workspace:*",
-    "@types/react": "^18.3.3",
+    "@types/react": "^19.2.6",
+    "@types/react-dom": "^19.2.3",
     "typescript": "^5.7.2"
   },
   "dependencies": {

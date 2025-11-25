@@ -43,8 +43,8 @@
     "@open-ot/typescript-config": "workspace:*",
     "@tailwindcss/postcss": "^4.1.11",
     "@types/node": "^20.19.9",
-    "@types/react": "^19.1.9",
-    "@types/react-dom": "^19.1.7",
+    "@types/react": "^19.2.6",
+    "@types/react-dom": "^19.2.3",
     "@types/react-syntax-highlighter": "^15.5.13",
     "eslint": "^9.32.0",
     "typescript": "^5.9.2"
