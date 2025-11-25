@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useEffect, useId, useState } from "react";
+import { Suspense, use, useEffect, useId, useState } from "react";
 import { useTheme } from "next-themes";
 import {
   Dialog,
@@ -8,8 +8,17 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@open-ot/ui/components/dialog";
+import { Skeleton } from "@open-ot/ui/components/skeleton";
 
 export function Mermaid({ chart }: { chart: string }) {
+  return (
+    <Suspense fallback={<Skeleton className="h-72 w-full rounded-lg" />}>
+      <MermaidRaw chart={chart} />
+    </Suspense>
+  );
+}
+
+function MermaidRaw({ chart }: { chart: string }) {
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
