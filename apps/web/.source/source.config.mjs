@@ -14,6 +14,7 @@ import bash from "shiki/langs/bash.mjs";
 import json from "shiki/langs/json.mjs";
 import yaml from "shiki/langs/yaml.mjs";
 import http from "shiki/langs/http.mjs";
+import console from "shiki/langs/console.mjs";
 var docs = defineDocs({
   dir: "content/docs"
 });
@@ -27,7 +28,7 @@ var source_config_default = defineConfig({
         light: "github-light",
         dark: "github-dark"
       },
-      langs: [js, ts, py, go, rust, bash, json, yaml, http],
+      langs: [js, ts, py, go, rust, bash, json, yaml, http, console],
       transformers: [
         ...rehypeCodeDefaultOptions.transformers ?? [],
         transformerTwoslash({
