@@ -100,21 +100,9 @@ describe("TextType", () => {
       const opB: TextOperation = [{ r: 3 }, { i: "B" }];
 
       const aPrime = TextType.transform(opA, opB, "left");
-      // A is left, so A comes first.
-      // We want A' such that Apply(B, A') == Apply(A, B')
-      // B inserts "B" at 3. Document becomes "...B...".
-      // A wanted to insert "A" at 3.
-      // Since A is left, "A" should be before "B".
-      // So in the new document (with B), "A" should be at 3.
-      // Wait, if A is left, it means A happened *before* B in the linear history we are building?
-      // No, "left" usually means "server" or "priority".
-      // If side='left', opA is prioritized.
-      // If we want "A" before "B", then when transforming A against B:
-      // B inserted at 3. A inserts at 3.
-      // If A is left, A stays at 3. B's insertion pushes everything after 3 by 1.
-      // But B inserted AT 3. So the character at 3 is now 'B'.
-      // If we want A before B, A should insert at 3.
-      // Then B (transformed) would insert at 4.
+      // Two inserts at the same index: with 'left' priority A stays before B.
+      // When transforming A against B, keep A's insert at the same index and
+      // add a retain for B's inserted text so B will come after A.
 
       expect(aPrime).toEqual([{ r: 3 }, { i: "A" }, { r: 1 }]);
     });

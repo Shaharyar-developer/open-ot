@@ -1,6 +1,6 @@
 # @open-ot/transport-http-sse
 
-HTTP + Server-Sent Events (SSE) transport adapter for OpenOT. Ideal for serverless environments where long-lived WebSocket connections are not available.
+A Server-Sent Events (SSE) transport adapter for OpenOT, with support for hybrid polling.
 
 ## Installation
 
@@ -8,207 +8,243 @@ HTTP + Server-Sent Events (SSE) transport adapter for OpenOT. Ideal for serverle
 npm install @open-ot/transport-http-sse
 ```
 
-## Overview
-
-This package provides a `TransportAdapter` implementation that uses:
-- **Server-Sent Events (SSE)** for receiving real-time updates from the server
-- **HTTP POST** for sending operations to the server
-
-This is perfect for serverless platforms like Vercel, AWS Lambda, or Cloudflare Workers where maintaining WebSocket connections is challenging or expensive.
-
 ## Usage
 
-### Client-Side
+### Basic SSE Transport
 
 ```typescript
 import { HttpSseTransport } from "@open-ot/transport-http-sse";
 import { OTClient } from "@open-ot/client";
-import { TextType } from "@open-ot/core";
 
-const transport = new HttpSseTransport("/api/ot", {
-  eventsPath: "/events",    // SSE endpoint (default: "/events")
-  messagesPath: "/messages", // POST endpoint (default: "/messages")
-  headers: {                 // Optional custom headers
-    "Authorization": "Bearer token123"
-  }
+const transport = new HttpSseTransport("http://localhost:3000/api/ot");
+const client = new OTClient({ transport });
+```
+
+### Hybrid Transport (SSE + Polling)
+
+The `HybridTransport` automatically switches between SSE and polling based on connection stability and user activity/inactivity to optimize costs and reliability.
+
+```typescript
+import { HybridTransport } from "@open-ot/transport-http-sse";
+import { OTClient } from "@open-ot/client";
+
+const transport = new HybridTransport({
+  docId: "my-document-123",
+  baseUrl: "/api/ot",
+  inactivityTimeout: 2 * 60 * 1000, // Switch to polling after 2 min inactive
+  pollingInterval: 5000,            // Poll every 5 seconds when in polling mode
 });
 
 const client = new OTClient({
-  type: TextType,
-  initialSnapshot: "",
-  initialRevision: 0,
+  // ... other options
   transport: transport,
 });
 ```
 
-### Server-Side (Next.js Example)
+## Server-Side Example (Next.js + Redis)
+
+This example demonstrates the **recommended architecture** for production deployments:
+1. Use **`@open-ot/adapter-redis`** for robust data persistence, atomic operations, and history storage.
+2. Use **Redis Pub/Sub** (via a direct client) for instant real-time updates to connected clients.
+3. Implement **Polling** as a fallback mechanism for the `HybridTransport` to ensure reliability even if SSE connections drop or timeout.
+
+This combination ensures scalability, data integrity, and a seamless user experience.
 
 ```typescript
-// app/api/ot/events/route.ts
+// app/api/ot/[[...event]]/route.ts
+import { NextRequest, NextResponse } from 'next/server';
+import { RedisAdapter } from '@open-ot/adapter-redis';
+
+// Initialize Redis Adapter
+// The adapter now handles both storage and pub/sub
+const redisAdapter = new RedisAdapter(process.env.REDIS_URL!);
+
+// SSE connection timeout (5 minutes to manage costs)
+const SSE_TIMEOUT = 5 * 60 * 1000;
+const KEEPALIVE_INTERVAL = 30 * 1000;
+
+// GET /api/ot/events?docId=123 - SSE endpoint
+// GET /api/ot/poll?docId=123&since=5 - Polling endpoint
 export async function GET(req: NextRequest) {
-  const stream = new ReadableStream({
-    start(controller) {
-      // Send updates to client
-      const data = `data: ${JSON.stringify({ type: "op", op: [...], revision: 1 })}\n\n`;
-      controller.enqueue(new TextEncoder().encode(data));
-    },
-  });
+  const { searchParams, pathname } = req.nextUrl;
+  const docId = searchParams.get('docId');
 
-  return new NextResponse(stream, {
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      "Connection": "keep-alive",
-    },
-  });
-}
-
-// app/api/ot/messages/route.ts
-export async function POST(req: NextRequest) {
-  const msg = await req.json();
-  
-  if (msg.type === "op") {
-    // Process operation with OT server
-    // Broadcast to SSE clients
+  if (!docId) {
+    return NextResponse.json({ error: 'docId required' }, { status: 400 });
   }
-  
-  return NextResponse.json({ success: true });
+
+  // Determine if this is SSE or polling based on path
+  const isPolling = pathname.includes('/poll') || searchParams.has('since');
+
+  if (isPolling) {
+    return handlePolling(docId, searchParams);
+  }
+
+  return handleSSE(docId, req);
+}
+
+// POST /api/ot/messages - Send operations
+export async function POST(req: NextRequest) {
+  try {
+    const body = await req.json();
+    const { docId, type, op, revision } = body;
+
+    if (!docId || !type) {
+      return NextResponse.json({ error: 'Invalid request' }, { status: 400 });
+    }
+
+    if (type === 'op') {
+      // Get current document state
+      const doc = await redisAdapter.getRecord(docId);
+
+      // Verify revision matches
+      if (revision !== doc.v) {
+        return NextResponse.json({ 
+          error: 'Revision mismatch',
+          expected: doc.v,
+          received: revision
+        }, { status: 409 });
+      }
+
+      // Apply operation and save (Atomic in adapter)
+      const newRevision = doc.v + 1;
+      
+      try {
+        await redisAdapter.saveOperation(docId, op, newRevision);
+      } catch (e: any) {
+        if (e.message.includes('Concurrency error')) {
+           return NextResponse.json({ error: 'Concurrency error' }, { status: 409 });
+        }
+        throw e;
+      }
+
+      // Broadcast to all clients via pub/sub
+      await redisAdapter.publish(`doc:${docId}`, JSON.stringify({
+        type: 'op',
+        op,
+        revision: newRevision,
+      }));
+
+      return NextResponse.json({ 
+        success: true, 
+        revision: newRevision 
+      });
+    }
+
+    return NextResponse.json({ error: 'Unknown message type' }, { status: 400 });
+  } catch (error) {
+    console.error('POST error:', error);
+    return NextResponse.json({ error: 'Internal error' }, { status: 500 });
+  }
+}
+
+// Handle SSE connections
+async function handleSSE(docId: string, req: NextRequest) {
+  const encoder = new TextEncoder();
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      let keepaliveTimer: NodeJS.Timeout | null = null;
+      let timeoutTimer: NodeJS.Timeout | null = null;
+      let unsubscribe: (() => void) | null = null;
+
+      try {
+        // Send initial document state
+        const doc = await redisAdapter.getRecord(docId);
+        
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+          type: 'init',
+          snapshot: doc.data,
+          revision: doc.v,
+        })}\n\n`));
+
+        // Subscribe to Redis pub/sub for updates
+        unsubscribe = await redisAdapter.subscribe(`doc:${docId}`, (message) => {
+           controller.enqueue(encoder.encode(`data: ${message}\n\n`));
+        });
+
+        // Keepalive to prevent connection timeout
+        keepaliveTimer = setInterval(() => {
+          try {
+            controller.enqueue(encoder.encode(': keepalive\n\n'));
+          } catch (error) {
+            // Stream closed
+          }
+        }, KEEPALIVE_INTERVAL);
+
+        // Force close after timeout to manage costs
+        timeoutTimer = setTimeout(() => {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+            type: 'timeout',
+            message: 'Connection timeout - please reconnect or switch to polling',
+            suggestPolling: true,
+          })}\n\n`));
+          
+          if (keepaliveTimer) clearInterval(keepaliveTimer);
+          if (unsubscribe) unsubscribe();
+          controller.close();
+        }, SSE_TIMEOUT);
+
+        // Handle client disconnect
+        req.signal.addEventListener('abort', () => {
+          if (keepaliveTimer) clearInterval(keepaliveTimer);
+          if (timeoutTimer) clearTimeout(timeoutTimer);
+          if (unsubscribe) unsubscribe();
+        });
+
+      } catch (error) {
+        console.error('SSE error:', error);
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+          type: 'error',
+          message: 'Server error',
+        })}\n\n`));
+        controller.close();
+      }
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache, no-transform',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no', // Disable nginx buffering
+    },
+  });
+}
+
+// Handle polling requests
+async function handlePolling(docId: string, searchParams: URLSearchParams) {
+  const sinceRevision = parseInt(searchParams.get('since') || '0');
+
+  try {
+    const doc = await redisAdapter.getRecord(docId);
+    
+    if (!doc) {
+      return NextResponse.json({ error: 'Document not found' }, { status: 404 });
+    }
+    
+    // If no new changes, return quickly
+    if (doc.v <= sinceRevision) {
+      return NextResponse.json({
+        type: 'poll',
+        hasUpdates: false,
+        revision: doc.v,
+      });
+    }
+
+    // Get operations since last known revision
+    const ops = await redisAdapter.getHistory(docId, sinceRevision, doc.v);
+    
+    return NextResponse.json({
+      type: 'poll',
+      hasUpdates: true,
+      operations: ops,
+      revision: doc.v,
+    });
+  } catch (error) {
+    console.error('Polling error:', error);
+    return NextResponse.json({ error: 'Internal error' }, { status: 500 });
+  }
 }
 ```
-
-## API Reference
-
-### `HttpSseTransport`
-
-#### Constructor
-
-```typescript
-new HttpSseTransport(baseUrl: string, options?: HttpSseTransportOptions)
-```
-
-**Parameters:**
-- `baseUrl`: Base URL for the API endpoints (e.g., `"/api/ot"` or `"https://api.example.com/ot"`)
-- `options`: Optional configuration object
-
-**Options:**
-- `eventsPath?: string` - Path for SSE endpoint (default: `"/events"`)
-- `messagesPath?: string` - Path for POST endpoint (default: `"/messages"`)
-- `headers?: Record<string, string>` - Custom headers to include in POST requests
-
-#### Methods
-
-##### `connect(onReceive: (msg: unknown) => void): Promise<void>`
-
-Establishes the SSE connection and starts listening for server updates.
-
-```typescript
-await transport.connect((message) => {
-  console.log("Received:", message);
-});
-```
-
-##### `send(msg: unknown): Promise<void>`
-
-Sends a message to the server via HTTP POST.
-
-```typescript
-await transport.send({
-  type: "op",
-  op: [{ i: "Hello" }],
-  revision: 0
-});
-```
-
-##### `disconnect(): Promise<void>`
-
-Closes the SSE connection.
-
-```typescript
-await transport.disconnect();
-```
-
-## Message Protocol
-
-The transport expects messages in this format:
-
-### Client → Server (POST)
-```json
-{
-  "type": "op",
-  "op": [...],
-  "revision": 5
-}
-```
-
-### Server → Client (SSE)
-```
-data: {"type":"op","op":[...],"revision":6}
-
-data: {"type":"ack"}
-```
-
-## Authentication
-
-Since the browser's native `EventSource` API doesn't support custom headers for the SSE connection, authentication typically relies on:
-
-1. **Cookies** - Set via `Set-Cookie` header, automatically sent with SSE requests
-2. **Query Parameters** - Include auth token in the SSE URL
-3. **Custom Headers in POST** - Use the `headers` option for POST requests
-
-```typescript
-// Option 1: Query params for SSE
-const transport = new HttpSseTransport("/api/ot?token=abc123");
-
-// Option 2: Headers for POST (cookies handle SSE)
-const transport = new HttpSseTransport("/api/ot", {
-  headers: { "Authorization": "Bearer token123" }
-});
-```
-
-## Production Considerations
-
-### Keepalive
-
-SSE connections can timeout. Send periodic keepalive messages:
-
-```typescript
-// Server-side
-setInterval(() => {
-  controller.enqueue(new TextEncoder().encode(": keepalive\n\n"));
-}, 30000);
-```
-
-### Error Handling
-
-The browser automatically reconnects on connection loss. Handle errors gracefully:
-
-```typescript
-transport.connect((msg) => {
-  // Handle message
-}).catch((err) => {
-  console.error("Failed to connect:", err);
-});
-```
-
-### Scaling
-
-For multi-instance deployments, use Redis Pub/Sub to broadcast operations:
-
-```typescript
-// When receiving an operation
-await redis.publish("ot:updates", JSON.stringify(message));
-
-// Subscribe to broadcast to SSE clients
-redisSub.on("message", (channel, message) => {
-  sseClients.forEach(client => client.send(message));
-});
-```
-
-## Browser Compatibility
-
-SSE is supported in all modern browsers. For older browsers, consider a polyfill like [`event-source-polyfill`](https://www.npmjs.com/package/event-source-polyfill).
-
-## See Also
-
-- [Next.js + SSE Integration Guide](/docs/integrations/nextjs-sse)
-- [@open-ot/transport-websocket](../transport-websocket) - WebSocket transport for non-serverless environments

@@ -1,7 +1,6 @@
 {
   "extends": "@open-ot/typescript-config/nextjs.json",
   "compilerOptions": {
-    "baseUrl": ".",
     "paths": {
       "@/*": [
         "./*"
@@ -10,7 +9,7 @@
         "../../packages/ui/src/*"
       ],
       "fumadocs-mdx:collections/*": [
-        ".source/*"
+        "./.source/*"
       ]
     },
     "plugins": [

@@ -4,6 +4,7 @@
 @source "../**/*.{ts,tsx}";
 @import "fumadocs-ui/css/shadcn.css";
 @import "fumadocs-ui/css/preset.css";
+@import 'fumadocs-twoslash/twoslash.css';
 
 @import "tw-animate-css";
 

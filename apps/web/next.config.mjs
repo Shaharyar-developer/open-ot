@@ -4,6 +4,7 @@ import { createMDX } from "fumadocs-mdx/next";
 const nextConfig = {
   transpilePackages: ["@open-ot/ui"],
   reactStrictMode: true,
+  serverExternalPackages: ["typescript", "twoslash"],
 };
 
 const withMDX = createMDX({});

@@ -50,19 +50,11 @@ export class Server {
       const history = await this.backend.getHistory(docId, revision);
 
       for (const pastOp of history) {
-        // Transform incoming op against past op
-        // Incoming op is 'right' (new), past op is 'left' (already happened)
-        // Wait, usually: transform(newItem, oldItem, 'left'/'right')
-        // If we want to apply newItem *after* oldItem:
-        // newItem' = transform(newItem, oldItem, 'right') ?
-        // Let's check the SPEC or standard convention.
-        // SPEC: transform(opA, opB, side) -> opA' (opA modified to apply AFTER opB)
-        // If opA is the new one, and opB is the history one.
-        // We usually say the new one is the "right" one in terms of "it comes later".
-        // But 'side' often refers to concurrency tie-breaking (server vs client).
-        // The server operations are "canonical". The client operation is "concurrent".
-        // Usually server wins or has precedence.
-        // If we use 'left' for server/history and 'right' for client/incoming.
+        // Transform the incoming client op against each past op (oldest -> newest).
+        // We iteratively update finalOp so it can be applied after each recorded operation.
+        // Using side = 'right' indicates the first argument (finalOp) should be treated as
+        // the operation that comes later; the side parameter controls tie-breaking for concurrent edits.
+        // Note: this assumes `history` is ordered from the earliest to the latest revision.
 
         finalOp = type.transform(finalOp, pastOp, "right");
       }

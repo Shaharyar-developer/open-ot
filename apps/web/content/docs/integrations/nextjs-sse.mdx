@@ -1,123 +1,174 @@
 ---
 title: Next.js + SSE
-description: Serverless real-time collaboration with Server-Sent Events and Redis.
+description: Real-time collaboration with Server-Sent Events and Redis.
 icon: Nextjs
 ---
 
-This guide demonstrates how to integrate OpenOT with Next.js App Router using Server-Sent Events (SSE) and Redis. This approach works in serverless environments (like Vercel) by using Redis for both storage and pub/sub broadcasting.
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Check, X } from 'lucide-react';
+
+This guide demonstrates how to integrate OpenOT with Next.js App Router using Server-Sent Events (SSE) and Redis.
+
+<Callout type="warn" title="Deployment Considerations">
+**SSE requires long-lived connections**, which have limitations in different environments:
+
+**Traditional Serverless (Vercel, AWS Lambda):**
+- Connection timeouts (30-60 seconds)
+- Cold starts disrupt connections
+- High cost for keeping functions alive
+- **Solution**: Use `HybridTransport` with polling fallback
+
+**Recommended Platforms:**
+- **Railway / Render / Fly.io**: Full support for persistent connections
+- **Cloudflare Durable Objects**: Stateful edge compute with WebSocket/SSE support
+- **Vercel with Fluid Compute**: Long-lived connections (when available)
+
+This guide focuses on the **hybrid approach** that works everywhere, gracefully degrading to polling when SSE isn't viable.
+</Callout>
 
 ## Prerequisites
 
 ```package-install
-npm install @open-ot/core @open-ot/client @open-ot/react @open-ot/server @open-ot/adapter-redis @open-ot/transport-http-sse ioredis
+npm install @open-ot/core @open-ot/client @open-ot/react @open-ot/server @open-ot/adapter-redis @open-ot/transport-http-sse
 ```
 
-You'll also need a Redis instance. For development, use Docker:
+### Redis Setup
 
+You'll need a Redis instance **with Pub/Sub support**:
+
+**Development:**
 ```bash
 docker run -d -p 6379:6379 redis:alpine
 ```
 
-For production, consider [Upstash](https://upstash.com/) (serverless Redis) or [Redis Cloud](https://redis.com/try-free/).
+**Production:**
+- <Check className="inline-flex text-green-500"/> [Redis Cloud](https://redis.com/try-free/) - Full Redis with Pub/Sub
+- <Check className="inline-flex text-green-500"/> [Railway Redis](https://railway.app/) - Managed Redis with Pub/Sub
+- <Check className="inline-flex text-green-500"/> Self-hosted Redis on your deployment platform
+- <X className="inline-flex text-red-500"/> **Not Upstash** - Upstash Redis (HTTP-based) doesn't support Pub/Sub
+
+<Callout type="info">
+If you're using Upstash or another Redis provider without Pub/Sub, you'll need to implement polling-based synchronization or use a different backend adapter.
+</Callout>
 
 ## 1. Server Setup
 
-### Redis Singleton
+### Redis Adapter with Built-in Pub/Sub
 
-Create a singleton for the Redis-backed OpenOT server.
+The `@open-ot/adapter-redis` includes built-in Pub/Sub support for real-time broadcasting.
 
 ```typescript title="lib/ot-server.ts"
 import { Server } from "@open-ot/server";
 import { RedisAdapter } from "@open-ot/adapter-redis";
 import { TextType } from "@open-ot/core";
-import Redis from "ioredis";
 
 const globalForOT = global as unknown as {
   otServer: Server;
-  redis: Redis;
-  redisSub: Redis;
+  redisAdapter: RedisAdapter;
 };
 
-// Create Redis clients
-export const redis =
-  globalForOT.redis ||
-  new Redis(process.env.REDIS_URL || "redis://localhost:6379");
-export const redisSub =
-  globalForOT.redisSub ||
-  new Redis(process.env.REDIS_URL || "redis://localhost:6379");
+// Initialize Redis Adapter (handles both storage and pub/sub)
+export const redisAdapter =
+  globalForOT.redisAdapter ||
+  new RedisAdapter(process.env.REDIS_URL || "redis://localhost:6379");
 
-// Initialize OpenOT Server with Redis backend
-const backend = new RedisAdapter(
-  process.env.REDIS_URL || "redis://localhost:6379"
-);
-export const otServer = globalForOT.otServer || new Server(backend);
+// Initialize OpenOT Server
+export const otServer = globalForOT.otServer || new Server(redisAdapter);
 otServer.registerType(TextType);
 
 if (process.env.NODE_ENV !== "production") {
   globalForOT.otServer = otServer;
-  globalForOT.redis = redis;
-  globalForOT.redisSub = redisSub;
+  globalForOT.redisAdapter = redisAdapter;
 }
 
 // Initialize demo document (idempotent)
 (async () => {
   try {
-    await backend.createDocument("demo-doc", "text", "Hello Next.js + Redis!");
+    await redisAdapter.createDocument("demo-doc", "text", "Hello Next.js + Redis!");
   } catch (e) {
     // Document already exists
   }
 })();
 ```
 
-### Route Handler with Redis Pub/Sub
+### API Route Handler
 
-Use Redis Pub/Sub to broadcast operations across serverless instances.
+The adapter's `publish` and `subscribe` methods handle Redis Pub/Sub automatically.
 
 ```typescript title="app/api/ot/[[...route]]/route.ts"
 import { NextRequest, NextResponse } from "next/server";
-import { otServer, redis, redisSub } from "@/lib/ot-server";
+import { otServer, redisAdapter } from "@/lib/ot-server";
 
-const CHANNEL = "ot:updates";
+// Track SSE clients per document
+const clients = new Map<string, Set<ReadableStreamDefaultController>>();
 
-// Track SSE clients per instance
-const clients = new Set<ReadableStreamDefaultController>();
+// Track subscriptions per document
+const subscriptions = new Map<string, () => void>();
 
-// Subscribe to Redis pub/sub (once per instance)
-let subscribed = false;
-if (!subscribed) {
-  redisSub.subscribe(CHANNEL);
-  redisSub.on("message", (channel, message) => {
-    if (channel === CHANNEL) {
-      const data = `data: ${message}\n\n`;
-      clients.forEach((controller) => {
-        try {
-          controller.enqueue(new TextEncoder().encode(data));
-        } catch (e) {
-          clients.delete(controller);
+async function ensureSubscription(docId: string) {
+  if (!subscriptions.has(docId)) {
+    const unsubscribe = await redisAdapter.subscribe(
+      `doc:${docId}`,
+      (message) => {
+        const data = `data: ${message}\n\n`;
+        const docClients = clients.get(docId);
+        if (docClients) {
+          docClients.forEach((controller) => {
+            try {
+              controller.enqueue(new TextEncoder().encode(data));
+            } catch (e) {
+              docClients.delete(controller);
+            }
+          });
         }
-      });
-    }
-  });
-  subscribed = true;
+      }
+    );
+    subscriptions.set(docId, unsubscribe);
+  }
 }
 
 export async function GET(req: NextRequest) {
-  if (req.nextUrl.pathname.endsWith("/events")) {
+  const { searchParams, pathname } = req.nextUrl;
+  const docId = searchParams.get("docId") || "demo-doc";
+
+  // SSE endpoint
+  if (pathname.endsWith("/events")) {
+    await ensureSubscription(docId);
+
     const stream = new ReadableStream({
-      start(controller) {
-        clients.add(controller);
-        // Send keepalive every 30s to prevent timeout
+      async start(controller) {
+        if (!clients.has(docId)) {
+          clients.set(docId, new Set());
+        }
+        clients.get(docId)!.add(controller);
+
+        // Send initial document state
+        try {
+          const doc = await redisAdapter.getRecord(docId);
+          const initMsg = JSON.stringify({
+            type: "init",
+            snapshot: doc.data,
+            revision: doc.v,
+          });
+          controller.enqueue(
+            new TextEncoder().encode(`data: ${initMsg}\n\n`)
+          );
+        } catch (e) {
+          console.error("Failed to get initial state:", e);
+        }
+
+        // Keepalive every 30s
         const interval = setInterval(() => {
           try {
             controller.enqueue(new TextEncoder().encode(": keepalive\n\n"));
           } catch (e) {
             clearInterval(interval);
-            clients.delete(controller);
+            clients.get(docId)?.delete(controller);
           }
         }, 30000);
       },
       cancel() {
-        clients.delete(controller);
+        clients.get(docId)?.delete(controller);
       },
     });
 
@@ -126,9 +177,38 @@ export async function GET(req: NextRequest) {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache, no-transform",
         Connection: "keep-alive",
-        "X-Accel-Buffering": "no", // Disable nginx buffering
+        "X-Accel-Buffering": "no",
       },
     });
+  }
+
+  // Polling endpoint (fallback for HybridTransport)
+  if (pathname.endsWith("/poll")) {
+    const sinceRevision = parseInt(searchParams.get("since") || "0");
+
+    try {
+      const doc = await redisAdapter.getRecord(docId);
+
+      if (doc.v <= sinceRevision) {
+        return NextResponse.json({
+          type: "poll",
+          hasUpdates: false,
+          revision: doc.v,
+        });
+      }
+
+      const ops = await redisAdapter.getHistory(docId, sinceRevision, doc.v);
+
+      return NextResponse.json({
+        type: "poll",
+        hasUpdates: true,
+        operations: ops,
+        revision: doc.v,
+      });
+    } catch (error) {
+      console.error("Polling error:", error);
+      return NextResponse.json({ error: "Internal error" }, { status: 500 });
+    }
   }
 
   return new NextResponse("Not Found", { status: 404 });
@@ -138,24 +218,29 @@ export async function POST(req: NextRequest) {
   if (req.nextUrl.pathname.endsWith("/messages")) {
     try {
       const msg = await req.json();
+      const docId = msg.docId || "demo-doc";
 
       if (msg.type === "op") {
         const result = await otServer.submitOperation(
-          "demo-doc",
+          docId,
           msg.op,
           msg.revision
         );
 
         // Broadcast via Redis Pub/Sub
-        const update = JSON.stringify({
-          type: "op",
-          op: result.op,
+        await redisAdapter.publish(
+          `doc:${docId}`,
+          JSON.stringify({
+            type: "op",
+            op: result.op,
+            revision: result.revision,
+          })
+        );
+
+        return NextResponse.json({
+          success: true,
           revision: result.revision,
         });
-
-        await redis.publish(CHANNEL, update);
-
-        return NextResponse.json({ success: true });
       }
     } catch (err) {
       console.error("Failed to process op:", err);
@@ -172,20 +257,26 @@ export async function POST(req: NextRequest) {
 
 ## 2. Client Setup
 
+### Using HybridTransport
+
+The `HybridTransport` automatically switches between SSE and polling based on connection stability and user activity. This ensures your app works reliably across all deployment environments.
+
 ```tsx title="components/Editor.tsx"
 "use client";
 
 import { useMemo } from "react";
 import { useOTClient } from "@open-ot/react";
-import { HttpSseTransport } from "@open-ot/transport-http-sse";
+import { HybridTransport } from "@open-ot/transport-http-sse";
 import { TextType } from "@open-ot/core";
 
 export function Editor() {
   const transport = useMemo(
     () =>
-      new HttpSseTransport("/api/ot", {
-        eventsPath: "/events",
-        messagesPath: "/messages",
+      new HybridTransport({
+        docId: "demo-doc",
+        baseUrl: "/api/ot",
+        inactivityTimeout: 2 * 60 * 1000, // Switch to polling after 2min inactive
+        pollingInterval: 5000, // Poll every 5s when in polling mode
       }),
     []
   );
@@ -221,6 +312,9 @@ export function Editor() {
       <p className="text-sm text-muted-foreground">
         Open in multiple tabs to see real-time sync!
       </p>
+      <p className="text-xs text-muted-foreground">
+        Connection: {transport.getCurrentMode()}
+      </p>
     </div>
   );
 }
@@ -232,13 +326,59 @@ Add to `.env.local`:
 
 ```bash
 REDIS_URL=redis://localhost:6379
-# For Upstash: redis://default:xxxxx@xxxxx.upstash.io:6379
+# For Redis Cloud: redis://default:password@redis-xxxxx.cloud.redislabs.com:12345
 ```
 
-## Production Deployment (Vercel)
+## Production Deployment
 
-1.  **Add Redis**: Use Upstash or Redis Cloud. Copy the connection URL.
-2.  **Set Environment Variable**: In Vercel dashboard, add `REDIS_URL`.
-3.  **Deploy**: `vercel deploy`
+### Recommended: Long-Running Server Platforms
 
-The Redis Pub/Sub ensures that operations are broadcasted across all serverless function instances, making this truly scalable.
+Deploy to platforms that support persistent connections:
+
+**Railway:**
+1. Create a new project and add Redis plugin
+2. Set `REDIS_URL` from the Redis plugin
+3. Deploy your Next.js app
+
+**Render:**
+1. Create a Redis instance
+2. Add `REDIS_URL` environment variable
+3. Deploy your Next.js app as a Web Service
+
+**Fly.io:**
+1. Create a Redis instance via Upstash for Fly (supports Pub/Sub)
+2. Set `REDIS_URL` in your app secrets
+3. Deploy with `fly deploy`
+
+### Alternative: Cloudflare Durable Objects
+
+For edge deployment with persistent connections, see the [Cloudflare integration guide](/docs/integrations/cloudflare).
+
+### Serverless Platforms (Vercel, Netlify)
+
+If deploying to traditional serverless:
+
+1. **Use Redis with Pub/Sub**: Redis Cloud or Railway Redis (not Upstash)
+2. **Expect polling mode**: `HybridTransport` will automatically fall back to polling due to connection timeouts
+3. **Optimize polling**: Consider setting `inactivityTimeout: 0` to use polling-only mode
+4. **Monitor costs**: Polling generates more requests than SSE
+
+<Callout type="info">
+For the best serverless experience, consider using Cloudflare Durable Objects or deploying to a platform with long-lived connection support.
+</Callout>
+
+## How It Works
+
+1. **SSE Mode**: When connections are stable, clients receive real-time updates via Server-Sent Events
+2. **Polling Fallback**: If SSE fails or times out, `HybridTransport` automatically switches to polling
+3. **Inactivity Detection**: After 2 minutes of inactivity, switches to polling to save resources
+4. **Activity Resumption**: When user becomes active again, switches back to SSE for real-time updates
+5. **Redis Pub/Sub**: Broadcasts operations across all server instances for horizontal scalability
+
+## Key Features
+
+- **Adaptive Transport**: Automatically chooses the best connection method
+- **Simplified Setup**: Redis adapter handles both storage and Pub/Sub
+- **Works Everywhere**: Gracefully degrades from SSE to polling as needed
+- **Production-Ready**: Built-in error handling and reconnection logic
+- **Scalable**: Redis Pub/Sub enables multi-instance deployments

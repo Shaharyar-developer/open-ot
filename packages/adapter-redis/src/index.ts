@@ -3,8 +3,12 @@ import { IBackendAdapter, DocumentRecord } from "@open-ot/server";
 
 export class RedisAdapter implements IBackendAdapter {
   private redis: Redis;
+  private subRedis: Redis | null = null;
+  private connectionString: string;
+  private subscriptions: Map<string, Set<(msg: string) => void>> = new Map();
 
   constructor(connectionString: string) {
+    this.connectionString = connectionString;
     this.redis = new Redis(connectionString);
   }
 
@@ -31,10 +35,6 @@ export class RedisAdapter implements IBackendAdapter {
     const meta = metadata as Record<string, string>;
 
     if (!meta || !meta.type) {
-      // Document doesn't exist, return default or throw?
-      // For now, let's assume it must exist or we throw.
-      // Or maybe we return a "not found" error that the server handles?
-      // The MemoryBackend threw "Document not found".
       throw new Error(`Document ${docId} not found`);
     }
 
@@ -61,16 +61,7 @@ export class RedisAdapter implements IBackendAdapter {
 
     const stop = end === undefined ? -1 : end - 1;
 
-    // Note: Redis list indices are 0-based.
-    // 'start' is the revision number?
-    // Wait, revision 0 produces op 0?
-    // If history is [op0, op1, op2], then op0 takes us from v0 to v1?
-    // Or is v0 the initial state?
-    // Usually:
-    // v0 (empty) + op0 -> v1.
-    // So op0 is stored at index 0.
-    // If client is at v0, they need ops starting from index 0.
-    // So 'start' matches the list index.
+    // Revision numbers map directly to list indices (e.g. v0 -> v1 is op at index 0).
 
     const opsStr = await this.redis.lrange(`doc:${docId}:history`, start, stop);
 
@@ -140,6 +131,53 @@ export class RedisAdapter implements IBackendAdapter {
   }
 
   /**
+   * Publish a message to a channel
+   */
+  async publish(channel: string, message: string): Promise<void> {
+    await this.redis.publish(channel, message);
+  }
+
+  /**
+   * Subscribe to a channel
+   * Returns an unsubscribe function
+   */
+  async subscribe(
+    channel: string,
+    onMessage: (msg: string) => void
+  ): Promise<() => void> {
+    if (!this.subRedis) {
+      this.subRedis = new Redis(this.connectionString);
+
+      this.subRedis.on("message", (chan, msg) => {
+        const callbacks = this.subscriptions.get(chan);
+        if (callbacks) {
+          callbacks.forEach((cb) => cb(msg));
+        }
+      });
+    }
+
+    if (!this.subscriptions.has(channel)) {
+      this.subscriptions.set(channel, new Set());
+      await this.subRedis.subscribe(channel);
+    }
+
+    this.subscriptions.get(channel)!.add(onMessage);
+
+    return async () => {
+      const callbacks = this.subscriptions.get(channel);
+      if (callbacks) {
+        callbacks.delete(onMessage);
+        if (callbacks.size === 0) {
+          this.subscriptions.delete(channel);
+          if (this.subRedis) {
+            await this.subRedis.unsubscribe(channel);
+          }
+        }
+      }
+    };
+  }
+
+  /**
    * Helper to create a document (for testing/initialization)
    */
   async createDocument(
@@ -156,5 +194,8 @@ export class RedisAdapter implements IBackendAdapter {
 
   async close() {
     await this.redis.quit();
+    if (this.subRedis) {
+      await this.subRedis.quit();
+    }
   }
 }

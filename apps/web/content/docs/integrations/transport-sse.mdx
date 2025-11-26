@@ -1,0 +1,594 @@
+---
+title: HTTP + SSE Transport
+description: Deep dive into Server-Sent Events transport with adaptive polling fallback.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+import { Tabs, Tab } from "fumadocs-ui/components/tabs";
+
+The `@open-ot/transport-http-sse` package provides two transport adapters: a basic SSE transport and a sophisticated hybrid transport that intelligently switches between SSE and HTTP polling.
+
+## Installation
+
+```package-install
+npm install @open-ot/transport-http-sse
+```
+
+## Transport Options
+
+This package exports two transport implementations:
+
+### `HttpSseTransport`
+
+A simple, unidirectional Server-Sent Events transport. Messages flow from server to client via SSE, while client-to-server communication uses HTTP POST.
+
+### `HybridTransport`
+
+An intelligent transport that combines SSE and HTTP polling with automatic mode switching based on:
+
+- Connection stability
+- User activity/inactivity
+- Server-sent timeout signals
+- Reconnection failure thresholds
+
+## HttpSseTransport
+
+The basic SSE transport is ideal when you have reliable long-lived connections.
+
+### Configuration
+
+```ts twoslash
+import { HttpSseTransport } from "@open-ot/transport-http-sse";
+
+const transport = new HttpSseTransport("http://localhost:3000", {
+  eventsPath: "/events", // SSE endpoint path
+  messagesPath: "/messages", // POST endpoint path
+  headers: {
+    // Optional custom headers
+    Authorization: "Bearer token",
+  },
+});
+//
+```
+
+### Connection Lifecycle
+
+```ts twoslash
+// @filename: types.ts
+export interface Message {
+  type: string;
+  [key: string]: unknown;
+}
+
+// @filename: index.ts
+// ---cut---
+import { HttpSseTransport } from "@open-ot/transport-http-sse";
+import type { Message } from "./types";
+
+const transport = new HttpSseTransport("http://localhost:3000");
+
+// Connect and start receiving messages
+await transport.connect((msg: unknown) => {
+  const message = msg as Message;
+  console.log("Received:", message.type);
+});
+
+// Send operations to server
+await transport.send({
+  type: "op",
+  op: [{ i: "Hello" }],
+  revision: 0,
+});
+
+// Cleanup
+await transport.disconnect();
+```
+
+### Custom Headers
+
+Authentication and custom headers are supported for the POST endpoint:
+
+```ts twoslash
+import { HttpSseTransport } from "@open-ot/transport-http-sse";
+
+const transport = new HttpSseTransport("http://localhost:3000", {
+  headers: {
+    Authorization: "Bearer eyJhbGc...",
+    "X-Client-ID": "client-123",
+  },
+});
+```
+
+<Callout type="warn">
+  Standard `EventSource` doesn't support custom headers for SSE connections. Use
+  cookies or query parameters for SSE authentication.
+</Callout>
+
+### Error Handling
+
+```ts twoslash
+import { HttpSseTransport } from "@open-ot/transport-http-sse";
+
+const transport = new HttpSseTransport("http://localhost:3000");
+
+try {
+  await transport.connect((msg) => {
+    console.log(msg);
+  });
+} catch (error) {
+  console.error("Failed to establish SSE connection:", error);
+}
+
+// Sending errors
+try {
+  await transport.send({ type: "op", op: [], revision: 0 });
+} catch (error) {
+  console.error("Failed to send operation:", error);
+  // Handle send failure (retry, queue, etc.)
+}
+```
+
+## HybridTransport
+
+The hybrid transport provides production-grade resilience with automatic fallback strategies.
+
+### Configuration Options
+
+```ts twoslash
+import { HybridTransport } from "@open-ot/transport-http-sse";
+
+const transport = new HybridTransport({
+  // Required
+  docId: "document-123",
+
+  // Optional - Connection settings
+  baseUrl: "/api/ot", // Default: '/api/ot'
+  headers: {
+    // Custom headers for requests
+    "X-Session-ID": "abc123",
+  },
+
+  // Optional - Inactivity detection
+  inactivityTimeout: 120000, // Default: 2 minutes (120000ms)
+  pollingInterval: 5000, // Default: 5 seconds (5000ms)
+
+  // Optional - Reconnection strategy
+  maxReconnectAttempts: 5, // Default: 5
+  reconnectDelay: 1000, // Default: 1000ms (with exponential backoff)
+});
+//
+```
+
+### Connection Modes
+
+The transport operates in one of three modes:
+
+```ts twoslash
+import { HybridTransport } from "@open-ot/transport-http-sse";
+
+const transport = new HybridTransport({
+  docId: "doc-1",
+});
+
+await transport.connect((msg) => {
+  console.log("Message:", msg);
+});
+// ---cut---
+// Check current mode
+const mode = transport.getCurrentMode();
+//
+
+console.log(`Current mode: ${mode}`);
+```
+
+### Automatic Mode Switching
+
+The transport automatically switches modes based on various conditions:
+
+<Tabs items={['SSE to Polling', 'Polling to SSE', 'Reconnection']}>
+<Tab value="SSE to Polling">
+
+**Switches from SSE to Polling when:**
+
+1. **User Inactivity**: After `inactivityTimeout` milliseconds of no activity
+
+```ts twoslash
+import { HybridTransport } from "@open-ot/transport-http-sse";
+
+const transport = new HybridTransport({
+  docId: "doc-1",
+  inactivityTimeout: 120000, // Switch after 2 minutes inactive
+});
+```
+
+2. **Server Timeout**: Server sends a timeout message suggesting polling
+
+```json
+{
+  "type": "timeout",
+  "suggestPolling": true,
+  "message": "Connection timeout - please reconnect or switch to polling"
+}
+```
+
+3. **Max Reconnect Attempts**: After `maxReconnectAttempts` consecutive failures
+
+```ts twoslash
+import { HybridTransport } from "@open-ot/transport-http-sse";
+
+const transport = new HybridTransport({
+  docId: "doc-1",
+  maxReconnectAttempts: 5, // Fall back to polling after 5 failures
+});
+```
+
+</Tab>
+<Tab value="Polling to SSE">
+
+**Switches from Polling to SSE when:**
+
+User activity is detected (sending any operation):
+
+```ts twoslash
+import { HybridTransport } from "@open-ot/transport-http-sse";
+
+const transport = new HybridTransport({ docId: "doc-1" });
+
+// Currently in polling mode due to inactivity
+// User makes an edit...
+await transport.send({
+  type: "op",
+  op: [{ i: "Hello" }],
+  revision: 5,
+});
+// Automatically switches back to SSE mode
+```
+
+</Tab>
+<Tab value="Reconnection">
+
+**Exponential Backoff Reconnection:**
+
+The transport retries SSE connections with increasing delays:
+
+```ts twoslash
+import { HybridTransport } from "@open-ot/transport-http-sse";
+
+const transport = new HybridTransport({
+  docId: "doc-1",
+  reconnectDelay: 1000, // Base delay
+  maxReconnectAttempts: 5,
+});
+
+// Reconnection timeline:
+// Attempt 1: Wait 1000ms (1s)
+// Attempt 2: Wait 2000ms (2s)
+// Attempt 3: Wait 3000ms (3s)
+// Attempt 4: Wait 4000ms (4s)
+// Attempt 5: Wait 5000ms (5s)
+// After 5 failures: Switch to polling
+```
+
+</Tab>
+</Tabs>
+
+### Manual Mode Control
+
+You can manually override the automatic mode switching:
+
+```ts twoslash
+import { HybridTransport } from "@open-ot/transport-http-sse";
+
+const transport = new HybridTransport({ docId: "doc-1" });
+
+await transport.connect((msg) => console.log(msg));
+
+// Force switch to SSE mode
+await transport.forceSSE();
+//              ^^^^^^^^
+
+// Force switch to polling mode
+transport.forcePolling();
+//        ^^^^^^^^^^^^
+
+// Check current mode
+const mode = transport.getCurrentMode();
+//
+console.log(`Mode: ${mode}`);
+```
+
+### Polling Behavior
+
+When in polling mode, the transport:
+
+1. **Polls immediately** upon switching
+2. **Polls at regular intervals** (configured via `pollingInterval`)
+3. **Tracks revision** to request only new operations
+
+```ts twoslash
+import { HybridTransport } from "@open-ot/transport-http-sse";
+
+const transport = new HybridTransport({
+  docId: "doc-1",
+  pollingInterval: 3000, // Poll every 3 seconds
+});
+
+// Makes requests to: GET /api/ot/poll?docId=doc-1&since={currentRevision}
+```
+
+Expected server response format:
+
+```json
+{
+  "type": "poll",
+  "hasUpdates": true,
+  "operations": [
+    { "op": [{ "i": "Hello" }], "revision": 6 },
+    { "op": [{ "i": " World" }], "revision": 7 }
+  ],
+  "revision": 7
+}
+```
+
+### Activity Detection
+
+The transport considers a user "active" when:
+
+1. **Sending any operation** via `send()`
+2. This automatically:
+   - Resets the inactivity timer
+   - Switches from polling to SSE (if currently polling)
+
+```ts twoslash
+import { HybridTransport } from "@open-ot/transport-http-sse";
+
+const transport = new HybridTransport({
+  docId: "doc-1",
+  inactivityTimeout: 60000,
+});
+
+await transport.connect((msg) => console.log(msg));
+
+// User types something after being inactive
+await transport.send({
+  type: "op",
+  op: [{ i: "a" }],
+  revision: 10,
+});
+// ✓ Inactivity timer resets
+// ✓ If in polling mode, switches to SSE
+```
+
+## Server Implementation
+
+Both transports require specific server endpoints.
+
+### SSE Endpoint
+
+```ts
+// GET /api/ot/events?docId={docId}
+// Returns: text/event-stream
+
+const stream = new ReadableStream({
+  start(controller) {
+    // Send initial state
+    controller.enqueue(
+      new TextEncoder().encode(
+        `data: ${JSON.stringify({
+          type: "init",
+          snapshot: documentSnapshot,
+          revision: currentRevision,
+        })}\n\n`
+      )
+    );
+
+    // Subscribe to updates and stream them
+    // Send keepalive comments every 30s
+  },
+});
+
+return new Response(stream, {
+  headers: {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  },
+});
+```
+
+### Messages Endpoint
+
+```ts
+// POST /api/ot/messages
+// Body: { docId, type, op, revision }
+
+const { docId, type, op, revision } = await request.json();
+
+if (type === "op") {
+  const result = await otServer.submitOperation(docId, op, revision);
+
+  // Broadcast to all clients
+  await broadcastUpdate(docId, {
+    type: "op",
+    op: result.op,
+    revision: result.revision,
+  });
+
+  return json({ success: true, revision: result.revision });
+}
+```
+
+### Polling Endpoint (for HybridTransport)
+
+```ts
+// GET /api/ot/poll?docId={docId}&since={revision}
+
+const docId = params.get("docId");
+const sinceRevision = parseInt(params.get("since") || "0");
+
+const doc = await getDocument(docId);
+
+if (doc.revision <= sinceRevision) {
+  return json({
+    type: "poll",
+    hasUpdates: false,
+    revision: doc.revision,
+  });
+}
+
+const operations = await getOperationsSince(docId, sinceRevision);
+
+return json({
+  type: "poll",
+  hasUpdates: true,
+  operations: operations,
+  revision: doc.revision,
+});
+```
+
+## Use Cases
+
+### When to Use HttpSseTransport
+
+- ✅ Reliable long-lived connections (traditional servers)
+- ✅ Low deployment complexity
+- ✅ Unidirectional updates are sufficient
+- ❌ Not ideal for serverless (connection timeouts)
+
+### When to Use HybridTransport
+
+- ✅ **Serverless deployments** (Vercel, Netlify, AWS Lambda)
+- ✅ **Unreliable networks** (mobile, spotty WiFi)
+- ✅ **Cost optimization** (polling when inactive)
+- ✅ **Maximum compatibility** (works everywhere)
+
+## Advanced Patterns
+
+### Connection State Management
+
+```ts twoslash
+import { HybridTransport } from "@open-ot/transport-http-sse";
+
+class ConnectionManager {
+  private transport: HybridTransport;
+  private reconnectTimer: NodeJS.Timeout | null = null;
+
+  constructor(docId: string) {
+    this.transport = new HybridTransport({
+      docId,
+      maxReconnectAttempts: 3,
+    });
+  }
+
+  async connect(onMessage: (msg: unknown) => void) {
+    try {
+      await this.transport.connect(onMessage);
+      console.log(`Connected in ${this.transport.getCurrentMode()} mode`);
+    } catch (error) {
+      console.error("Connection failed:", error);
+      this.scheduleReconnect(onMessage);
+    }
+  }
+
+  private scheduleReconnect(onMessage: (msg: unknown) => void) {
+    this.reconnectTimer = setTimeout(() => {
+      console.log("Attempting to reconnect...");
+      this.connect(onMessage);
+    }, 5000);
+  }
+
+  async disconnect() {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+    }
+    await this.transport.disconnect();
+  }
+}
+```
+
+### Monitoring Mode Changes
+
+```ts twoslash
+import { HybridTransport } from "@open-ot/transport-http-sse";
+
+const transport = new HybridTransport({ docId: "doc-1" });
+
+// Poll mode status
+let currentMode = transport.getCurrentMode();
+
+const modeMonitor = setInterval(() => {
+  const newMode = transport.getCurrentMode();
+  if (newMode !== currentMode) {
+    console.log(`Mode changed: ${currentMode} → ${newMode}`);
+    currentMode = newMode;
+
+    // Update UI, analytics, etc.
+    updateConnectionIndicator(newMode);
+  }
+}, 1000);
+
+function updateConnectionIndicator(mode: string) {
+  // Update connection status in UI
+  // 'sse' = green (realtime)
+  // 'polling' = yellow (delayed)
+  // 'disconnected' = red (offline)
+}
+```
+
+## Performance Considerations
+
+### SSE Mode
+
+- **Latency**: ~50-200ms (near real-time)
+- **Overhead**: Persistent connection + keepalive
+- **Server Load**: One connection per client
+
+### Polling Mode
+
+- **Latency**: Configurable (default 5s)
+- **Overhead**: HTTP request overhead per poll
+- **Server Load**: Requests × (1000ms / pollingInterval)
+
+### Recommendations
+
+```ts twoslash
+import { HybridTransport } from "@open-ot/transport-http-sse";
+
+// For active editing (low latency)
+const activeTransport = new HybridTransport({
+  docId: "doc-1",
+  inactivityTimeout: 60000, // 1 minute
+  pollingInterval: 3000, // 3 seconds when polling
+});
+
+// For viewing/reading (lower server load)
+const viewerTransport = new HybridTransport({
+  docId: "doc-1",
+  inactivityTimeout: 10000, // 10 seconds
+  pollingInterval: 10000, // 10 seconds when polling
+});
+```
+
+## Debugging
+
+Enable verbose logging for troubleshooting:
+
+```ts twoslash
+import { HybridTransport } from "@open-ot/transport-http-sse";
+
+const transport = new HybridTransport({
+  docId: "doc-1",
+});
+
+// The transport logs mode changes to console:
+// "SSE connected"
+// "User inactive, switching to polling to save costs..."
+// "Activity detected, switching back to SSE..."
+// "Max reconnect attempts reached, switching to polling"
+```
+
+## See Also
+
+- [Next.js + SSE Integration](/docs/integrations/nextjs-sse) - Full Next.js example
+- [WebSocket Transport](/docs/integrations/transport-websocket) - Alternative transport
+- [@open-ot/core](../core) - Core OT types and transformations

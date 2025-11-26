@@ -1,4 +1,6 @@
 // @ts-nocheck
+import * as __fd_glob_8 from "../content/docs/integrations/transport-websocket.mdx?collection=docs"
+import * as __fd_glob_7 from "../content/docs/integrations/transport-sse.mdx?collection=docs"
 import * as __fd_glob_6 from "../content/docs/integrations/react-ws.mdx?collection=docs"
 import * as __fd_glob_5 from "../content/docs/integrations/nextjs-websocket.mdx?collection=docs"
 import * as __fd_glob_4 from "../content/docs/integrations/nextjs-sse.mdx?collection=docs"
@@ -14,4 +16,4 @@ const create = server<typeof Config, import("fumadocs-mdx/runtime/types").Intern
   }
 }>({"doc":{"passthroughs":["extractedReferences"]}});
 
-export const docs = await create.docs("docs", "content/docs", {"meta.json": __fd_glob_0, }, {"concepts.mdx": __fd_glob_1, "getting-started.mdx": __fd_glob_2, "introduction.mdx": __fd_glob_3, "integrations/nextjs-sse.mdx": __fd_glob_4, "integrations/nextjs-websocket.mdx": __fd_glob_5, "integrations/react-ws.mdx": __fd_glob_6, });
+export const docs = await create.docs("docs", "content/docs", {"meta.json": __fd_glob_0, }, {"concepts.mdx": __fd_glob_1, "getting-started.mdx": __fd_glob_2, "introduction.mdx": __fd_glob_3, "integrations/nextjs-sse.mdx": __fd_glob_4, "integrations/nextjs-websocket.mdx": __fd_glob_5, "integrations/react-ws.mdx": __fd_glob_6, "integrations/transport-sse.mdx": __fd_glob_7, "integrations/transport-websocket.mdx": __fd_glob_8, });

@@ -1,0 +1,794 @@
+---
+title: WebSocket Transport
+description: Low-latency bidirectional real-time communication using WebSockets.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+import { Tabs, Tab } from "fumadocs-ui/components/tabs";
+
+The `@open-ot/transport-websocket` package provides a `TransportAdapter` implementation using WebSockets for low-latency, bidirectional real-time communication.
+
+## Installation
+
+```package-install
+npm install @open-ot/transport-websocket ws
+```
+
+<Callout type="info">
+  The `ws` package is only required for Node.js environments. Browser
+  environments use the native `WebSocket` API.
+</Callout>
+
+## Overview
+
+WebSocket transport is ideal for:
+
+- ✅ Traditional server environments (Node.js, VPS, Docker)
+- ✅ Applications requiring lowest possible latency
+- ✅ Bidirectional streaming communication
+- ✅ Long-lived connection support
+- ❌ Not suitable for serverless (requires persistent connections)
+
+## Basic Usage
+
+### Client-Side
+
+```ts twoslash
+import { WebSocketTransport } from "@open-ot/transport-websocket";
+
+const transport = new WebSocketTransport("ws://localhost:3000");
+
+// Connect and start receiving messages
+await transport.connect((msg) => {
+  console.log("Received:", msg);
+});
+
+// Send a message
+await transport.send({
+  type: "op",
+  op: [{ i: "Hello" }],
+  revision: 0,
+});
+
+// Cleanup
+await transport.disconnect();
+```
+
+### Server-Side
+
+```ts twoslash
+import { WebSocketServer } from "ws";
+
+const wss = new WebSocketServer({ port: 3000 });
+
+wss.on("connection", (ws) => {
+  console.log("Client connected");
+
+  ws.on("message", (data) => {
+    const msg = JSON.parse(data.toString());
+    console.log("Received:", msg);
+
+    // Echo back to client
+    ws.send(JSON.stringify({ type: "ack" }));
+  });
+
+  ws.on("close", () => {
+    console.log("Client disconnected");
+  });
+});
+```
+
+## API Reference
+
+### Constructor
+
+```ts twoslash
+import { WebSocketTransport } from "@open-ot/transport-websocket";
+
+const transport = new WebSocketTransport("ws://localhost:3000");
+//
+```
+
+**Parameters:**
+
+- `url`: WebSocket server URL
+  - Development: `"ws://localhost:3000"`
+  - Production: `"wss://api.example.com"`
+  - Relative (browser): Automatically uses current protocol
+
+### Methods
+
+#### `connect()`
+
+Establishes the WebSocket connection and registers the message handler.
+
+```ts twoslash
+import { WebSocketTransport } from "@open-ot/transport-websocket";
+
+const transport = new WebSocketTransport("ws://localhost:3000");
+
+await transport.connect((message: unknown) => {
+  //
+  console.log("Received:", message);
+});
+```
+
+**Parameters:**
+
+- `onReceive`: Callback function invoked for each received message
+
+**Returns:** `Promise<void>` that resolves when connection is established
+
+**Throws:** Error if connection fails
+
+#### `send()`
+
+Sends a message to the server.
+
+```ts twoslash
+import { WebSocketTransport } from "@open-ot/transport-websocket";
+
+const transport = new WebSocketTransport("ws://localhost:3000");
+await transport.connect(() => {});
+
+await transport.send({
+  type: "op",
+  op: [{ i: "Hello" }],
+  revision: 5,
+});
+```
+
+**Parameters:**
+
+- `msg`: Message object (automatically JSON-encoded)
+
+**Returns:** `Promise<void>`
+
+**Throws:** Error if transport is disconnected
+
+#### `disconnect()`
+
+Closes the WebSocket connection and cleans up resources.
+
+```ts twoslash
+import { WebSocketTransport } from "@open-ot/transport-websocket";
+
+const transport = new WebSocketTransport("ws://localhost:3000");
+await transport.connect(() => {});
+
+// Later...
+await transport.disconnect();
+```
+
+**Returns:** `Promise<void>`
+
+## Connection Lifecycle
+
+### State Management
+
+The transport manages connection state internally:
+
+```ts twoslash
+import { WebSocketTransport } from "@open-ot/transport-websocket";
+
+const transport = new WebSocketTransport("ws://localhost:3000");
+
+// State: Disconnected
+console.log("Initial state: disconnected");
+
+try {
+  await transport.connect((msg) => {
+    console.log(msg);
+  });
+  // State: Connected
+  console.log("Now connected");
+
+  await transport.send({ type: "ping" });
+  // State: Still connected
+} catch (error) {
+  // State: Disconnected (connection failed)
+  console.error("Connection failed:", error);
+} finally {
+  await transport.disconnect();
+  // State: Disconnected
+  console.log("Cleanly disconnected");
+}
+```
+
+### Reconnection Handling
+
+The base `WebSocketTransport` doesn't include automatic reconnection. Implement reconnection logic at the application level:
+
+```ts twoslash
+import { WebSocketTransport } from "@open-ot/transport-websocket";
+
+class ReconnectingTransport {
+  private transport: WebSocketTransport;
+  //
+  private url: string;
+  private maxRetries: number;
+  private retryDelay: number;
+  private currentRetries = 0;
+
+  constructor(url: string, maxRetries = 5, retryDelay = 1000) {
+    this.url = url;
+    this.maxRetries = maxRetries;
+    this.retryDelay = retryDelay;
+    this.transport = new WebSocketTransport(url);
+  }
+
+  async connect(onReceive: (msg: unknown) => void): Promise<void> {
+    while (this.currentRetries < this.maxRetries) {
+      try {
+        await this.transport.connect(onReceive);
+        this.currentRetries = 0; // Reset on success
+        return;
+      } catch (error) {
+        this.currentRetries++;
+        console.log(`Retry ${this.currentRetries}/${this.maxRetries}`);
+
+        if (this.currentRetries >= this.maxRetries) {
+          throw new Error("Max reconnection attempts reached");
+        }
+
+        await this.delay(this.retryDelay * this.currentRetries);
+      }
+    }
+  }
+
+  async send(msg: unknown): Promise<void> {
+    //
+    return this.transport.send(msg);
+  }
+
+  async disconnect(): Promise<void> {
+    return this.transport.disconnect();
+  }
+
+  private delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+}
+```
+
+## Message Protocol
+
+All messages are automatically JSON-encoded/decoded.
+
+### Client → Server
+
+```json
+{
+  "type": "op",
+  "op": [{ "i": "Hello" }],
+  "revision": 5
+}
+```
+
+### Server → Client
+
+Acknowledgment:
+
+```json
+{
+  "type": "ack"
+}
+```
+
+Operation broadcast:
+
+```json
+{
+  "type": "op",
+  "op": [{ "i": " World" }],
+  "revision": 6
+}
+```
+
+## Server Implementation
+
+### Basic WebSocket Server
+
+```ts twoslash
+import { WebSocketServer } from "ws";
+import { Server } from "@open-ot/server";
+import { MemoryBackend } from "@open-ot/server";
+import { TextType } from "@open-ot/core";
+
+const backend = new MemoryBackend();
+const otServer = new Server(backend);
+otServer.registerType(TextType);
+
+await backend.createDocument("doc-1", "text", "");
+
+const wss = new WebSocketServer({ port: 3000 });
+
+wss.on("connection", (ws) => {
+  ws.on("message", async (data) => {
+    const msg = JSON.parse(data.toString());
+
+    if (msg.type === "op") {
+      try {
+        const result = await otServer.submitOperation(
+          "doc-1",
+          msg.op,
+          msg.revision
+        );
+
+        // Acknowledge to sender
+        ws.send(
+          JSON.stringify({
+            type: "ack",
+            revision: result.revision,
+          })
+        );
+
+        // Broadcast to all other clients
+        const broadcast = JSON.stringify({
+          type: "op",
+          op: result.op,
+          revision: result.revision,
+        });
+
+        wss.clients.forEach((client) => {
+          if (client !== ws && client.readyState === 1) {
+            client.send(broadcast);
+          }
+        });
+      } catch (error) {
+        ws.send(
+          JSON.stringify({
+            type: "error",
+            message: error instanceof Error ? error.message : "Unknown error",
+          })
+        );
+      }
+    }
+  });
+});
+
+console.log("WebSocket server listening on port 3000");
+```
+
+### With Redis Pub/Sub (Multi-Instance)
+
+For horizontal scaling, use Redis Pub/Sub to synchronize across server instances:
+
+```ts twoslash
+import { WebSocketServer } from "ws";
+import { Server } from "@open-ot/server";
+import { RedisAdapter } from "@open-ot/adapter-redis";
+import { TextType } from "@open-ot/core";
+
+const redisAdapter = new RedisAdapter(process.env.REDIS_URL!);
+const otServer = new Server(redisAdapter);
+otServer.registerType(TextType);
+
+const wss = new WebSocketServer({ port: 3000 });
+
+// Subscribe to Redis pub/sub for cross-instance communication
+const subscriptions = new Map<string, () => void>();
+
+async function ensureSubscription(docId: string) {
+  if (!subscriptions.has(docId)) {
+    const unsubscribe = await redisAdapter.subscribe(
+      `doc:${docId}`,
+      (message) => {
+        // Broadcast to all clients on this instance
+        wss.clients.forEach((client) => {
+          if (client.readyState === 1) {
+            client.send(message);
+          }
+        });
+      }
+    );
+    subscriptions.set(docId, unsubscribe);
+  }
+}
+
+wss.on("connection", async (ws) => {
+  await ensureSubscription("doc-1");
+
+  ws.on("message", async (data) => {
+    const msg = JSON.parse(data.toString());
+
+    if (msg.type === "op") {
+      try {
+        const result = await otServer.submitOperation(
+          msg.docId || "doc-1",
+          msg.op,
+          msg.revision
+        );
+
+        // Acknowledge to sender
+        ws.send(
+          JSON.stringify({
+            type: "ack",
+            revision: result.revision,
+          })
+        );
+
+        // Publish to Redis (will broadcast to all instances)
+        await redisAdapter.publish(
+          `doc:${msg.docId || "doc-1"}`,
+          JSON.stringify({
+            type: "op",
+            op: result.op,
+            revision: result.revision,
+          })
+        );
+      } catch (error) {
+        ws.send(
+          JSON.stringify({
+            type: "error",
+            message: error instanceof Error ? error.message : "Unknown error",
+          })
+        );
+      }
+    }
+  });
+});
+```
+
+## Production Patterns
+
+### Secure WebSockets (WSS)
+
+Always use encrypted WebSockets in production:
+
+```ts twoslash
+// Browser - automatically determine protocol
+const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+const host = window.location.host;
+const transport = new (
+  await import("@open-ot/transport-websocket")
+).WebSocketTransport(`${protocol}//${host}`);
+```
+
+Server configuration with TLS:
+
+```ts twoslash
+import { WebSocketServer } from "ws";
+import { createServer } from "https";
+import { readFileSync } from "fs";
+
+const server = createServer({
+  cert: readFileSync("/path/to/cert.pem"),
+  key: readFileSync("/path/to/key.pem"),
+});
+
+const wss = new WebSocketServer({ server });
+
+server.listen(443);
+```
+
+### Heartbeat / Ping-Pong
+
+Prevent idle connection timeouts with periodic pings:
+
+```ts twoslash
+import { WebSocketServer } from "ws";
+
+const wss = new WebSocketServer({ port: 3000 });
+
+wss.on("connection", (ws) => {
+  let isAlive = true;
+
+  ws.on("pong", () => {
+    isAlive = true;
+  });
+
+  const interval = setInterval(() => {
+    if (!isAlive) {
+      ws.terminate();
+      return;
+    }
+
+    isAlive = false;
+    ws.ping();
+  }, 30000); // Ping every 30 seconds
+
+  ws.on("close", () => {
+    clearInterval(interval);
+  });
+});
+```
+
+### Rate Limiting
+
+Protect your server from excessive messages:
+
+```ts twoslash
+import { WebSocketServer } from "ws";
+
+const wss = new WebSocketServer({ port: 3000 });
+
+interface RateLimitInfo {
+  count: number;
+  resetTime: number;
+}
+
+const rateLimits = new Map<any, RateLimitInfo>();
+
+const RATE_LIMIT = 100; // messages
+const RATE_WINDOW = 60000; // per 60 seconds
+
+wss.on("connection", (ws) => {
+  rateLimits.set(ws, {
+    count: 0,
+    resetTime: Date.now() + RATE_WINDOW,
+  });
+
+  ws.on("message", (data) => {
+    const limit = rateLimits.get(ws)!;
+    const now = Date.now();
+
+    // Reset if window expired
+    if (now > limit.resetTime) {
+      limit.count = 0;
+      limit.resetTime = now + RATE_WINDOW;
+    }
+
+    limit.count++;
+
+    if (limit.count > RATE_LIMIT) {
+      ws.send(
+        JSON.stringify({
+          type: "error",
+          message: "Rate limit exceeded",
+        })
+      );
+      return;
+    }
+
+    // Process message...
+  });
+
+  ws.on("close", () => {
+    rateLimits.delete(ws);
+  });
+});
+```
+
+### Authentication
+
+Authenticate WebSocket connections:
+
+```ts twoslash
+import { WebSocketServer } from "ws";
+import { IncomingMessage } from "http";
+
+const wss = new WebSocketServer({ noServer: true });
+
+const server = (await import("http")).createServer();
+
+server.on("upgrade", (request: IncomingMessage, socket, head) => {
+  // Extract token from query string or headers
+  const url = new URL(request.url!, `http://${request.headers.host}`);
+  const token = url.searchParams.get("token");
+
+  if (!isValidToken(token)) {
+    socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+    socket.destroy();
+    return;
+  }
+
+  wss.handleUpgrade(request, socket, head, (ws) => {
+    wss.emit("connection", ws, request);
+  });
+});
+
+function isValidToken(token: string | null): boolean {
+  // Implement your auth logic
+  return token === "valid-token";
+}
+
+server.listen(3000);
+```
+
+## Error Handling
+
+### Connection Errors
+
+```ts twoslash
+import { WebSocketTransport } from "@open-ot/transport-websocket";
+
+const transport = new WebSocketTransport("ws://localhost:3000");
+
+try {
+  await transport.connect((msg) => {
+    console.log(msg);
+  });
+} catch (error) {
+  if (error instanceof Error) {
+    // Handle specific error types
+    if (error.message.includes("ECONNREFUSED")) {
+      console.error("Server is not running");
+    } else if (error.message.includes("timeout")) {
+      console.error("Connection timeout");
+    } else {
+      console.error("Connection failed:", error.message);
+    }
+  }
+}
+```
+
+### Send Errors
+
+```ts twoslash
+import { WebSocketTransport } from "@open-ot/transport-websocket";
+
+const transport = new WebSocketTransport("ws://localhost:3000");
+await transport.connect(() => {});
+
+try {
+  await transport.send({
+    type: "op",
+    op: [{ i: "Hello" }],
+    revision: 5,
+  });
+} catch (error) {
+  // Transport disconnected or send failed
+  console.error("Send failed:", error);
+
+  // Queue message for retry or notify user
+}
+```
+
+## Browser vs Node.js
+
+### Browser
+
+Browsers have native `WebSocket` support:
+
+```ts twoslash
+import { WebSocketTransport } from "@open-ot/transport-websocket";
+
+// Uses native browser WebSocket API
+const transport = new WebSocketTransport("wss://api.example.com");
+```
+
+### Node.js
+
+Node.js requires the `ws` package:
+
+```ts twoslash
+import { WebSocketTransport } from "@open-ot/transport-websocket";
+
+// Uses 'ws' package under the hood
+const transport = new WebSocketTransport("ws://localhost:3000");
+```
+
+## Performance Characteristics
+
+### Latency
+
+- **Typical latency**: 10-50ms
+- **Factors affecting latency**:
+  - Network round-trip time
+  - Server processing time
+  - Message size
+
+### Throughput
+
+- **Message rate**: Thousands per second
+- **Bandwidth**: Depends on message size
+- **Overhead**: Minimal (binary frame headers)
+
+### Comparison with SSE
+
+| Feature               | WebSocket | SSE                       |
+| --------------------- | --------- | ------------------------- |
+| **Latency**           | 10-50ms   | 50-200ms                  |
+| **Bidirectional**     | ✅ Native | ❌ Requires separate HTTP |
+| **Protocol Overhead** | Lower     | Higher                    |
+| **Browser Support**   | Excellent | Excellent                 |
+| **Serverless**        | ❌ No     | ✅ Yes (with limitations) |
+| **Reconnection**      | Manual    | Built into EventSource    |
+
+## Debugging
+
+### Enable Verbose Logging
+
+```ts twoslash
+import { WebSocketServer } from "ws";
+
+const wss = new WebSocketServer({ port: 3000 });
+
+wss.on("connection", (ws, request) => {
+  const clientId = request.socket.remoteAddress;
+  console.log(`[${clientId}] Connected`);
+
+  ws.on("message", (data) => {
+    console.log(`[${clientId}] Received:`, data.toString());
+  });
+
+  ws.on("close", (code, reason) => {
+    console.log(`[${clientId}] Disconnected: ${code} ${reason}`);
+  });
+
+  ws.on("error", (error) => {
+    console.error(`[${clientId}] Error:`, error);
+  });
+});
+```
+
+### Monitor Connection State
+
+```ts twoslash
+import { WebSocketTransport } from "@open-ot/transport-websocket";
+
+const transport = new WebSocketTransport("ws://localhost:3000");
+
+// Wrap connect to log state changes
+const originalConnect = transport.connect.bind(transport);
+transport.connect = async (onReceive) => {
+  console.log("Connecting...");
+  try {
+    await originalConnect(onReceive);
+    console.log("Connected successfully");
+  } catch (error) {
+    console.error("Connection failed:", error);
+    throw error;
+  }
+};
+
+// Same for send
+const originalSend = transport.send.bind(transport);
+transport.send = async (msg) => {
+  console.log("Sending:", msg);
+  await originalSend(msg);
+};
+```
+
+## Migration from SSE
+
+If you're migrating from `HttpSseTransport`:
+
+<Tabs items={['Before (SSE)', 'After (WebSocket)']}>
+<Tab value="Before (SSE)">
+
+```ts twoslash
+import { HttpSseTransport } from "@open-ot/transport-http-sse";
+
+const transport = new HttpSseTransport("http://localhost:3000", {
+  eventsPath: "/events",
+  messagesPath: "/messages",
+});
+
+await transport.connect((msg) => {
+  console.log(msg);
+});
+
+await transport.send({ type: "op", op: [], revision: 0 });
+```
+
+</Tab>
+<Tab value="After (WebSocket)">
+
+```ts twoslash
+import { WebSocketTransport } from "@open-ot/transport-websocket";
+
+const transport = new WebSocketTransport("ws://localhost:3000");
+
+await transport.connect((msg) => {
+  console.log(msg);
+});
+
+await transport.send({ type: "op", op: [], revision: 0 });
+```
+
+Server changes:
+
+- Replace SSE endpoint with WebSocket server
+- Implement bidirectional message handling
+- Ensure proper broadcasting to all connected clients
+
+</Tab>
+</Tabs>
+
+## See Also
+
+- [HTTP + SSE Transport](/docs/integrations/transport-sse) - Alternative transport
+- [@open-ot/core](../core) - Core OT types and transformations
+- [Next.js + WebSocket](/docs/integrations/nextjs-websocket) - Next.js integration example
