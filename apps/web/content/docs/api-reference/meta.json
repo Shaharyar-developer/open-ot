@@ -1,0 +1,5 @@
+{
+  "pages": ["core", "client", "server", "..."],
+  "root": true,
+  "title": "API Reference"
+}

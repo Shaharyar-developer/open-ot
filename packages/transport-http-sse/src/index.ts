@@ -24,13 +24,13 @@ export interface HttpSseTransportOptions {
   headers?: Record<string, string>;
 }
 
-export class HttpSseTransport implements TransportAdapter<unknown> {
+export class HttpSseTransport<M = unknown> implements TransportAdapter<M> {
   private baseUrl: string;
   private eventsPath: string;
   private messagesPath: string;
   private headers: Record<string, string>;
   private eventSource: IEventSource | null = null;
-  private onReceiveCallback: ((msg: unknown) => void) | null = null;
+  private onReceiveCallback: ((msg: M) => void) | null = null;
   private isConnected: boolean = false;
 
   constructor(baseUrl: string, options: HttpSseTransportOptions = {}) {
@@ -41,7 +41,7 @@ export class HttpSseTransport implements TransportAdapter<unknown> {
     this.headers = options.headers || {};
   }
 
-  connect(onReceive: (msg: unknown) => void): Promise<void> {
+  connect(onReceive: (msg: M) => void): Promise<void> {
     return new Promise((resolve, reject) => {
       if (this.eventSource) {
         if (this.eventSource.readyState === 1) {
@@ -80,7 +80,7 @@ export class HttpSseTransport implements TransportAdapter<unknown> {
         if (this.onReceiveCallback && event.data) {
           try {
             const data = JSON.parse(event.data);
-            this.onReceiveCallback(data);
+            this.onReceiveCallback(data as M);
           } catch (e) {
             // Ignore parse errors
           }
@@ -89,7 +89,7 @@ export class HttpSseTransport implements TransportAdapter<unknown> {
     });
   }
 
-  async send(msg: unknown): Promise<void> {
+  async send(msg: M): Promise<void> {
     if (!this.isConnected) {
       throw new Error("Transport disconnected");
     }

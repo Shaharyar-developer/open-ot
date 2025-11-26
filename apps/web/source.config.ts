@@ -14,6 +14,9 @@ import json from "shiki/langs/json.mjs";
 import yaml from "shiki/langs/yaml.mjs";
 import http from "shiki/langs/http.mjs";
 import console from "shiki/langs/console.mjs";
+import { remarkAutoTypeTable, createGenerator } from "fumadocs-typescript";
+
+const generator = createGenerator();
 
 export const docs: ReturnType<typeof defineDocs> = defineDocs({
   dir: "content/docs",
@@ -21,7 +24,7 @@ export const docs: ReturnType<typeof defineDocs> = defineDocs({
 
 export default defineConfig({
   mdxOptions: {
-    remarkPlugins: [remarkMath],
+    remarkPlugins: [remarkMath, [remarkAutoTypeTable, { generator }]],
     // Place it at first, it should be executed before the syntax highlighter
     rehypePlugins: (v) => [rehypeKatex, ...v],
     rehypeCodeOptions: {

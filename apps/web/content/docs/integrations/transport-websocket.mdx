@@ -34,13 +34,22 @@ WebSocket transport is ideal for:
 ### Client-Side
 
 ```ts twoslash
-import { WebSocketTransport } from "@open-ot/transport-websocket";
+// @filename: types.ts
+export interface Message {
+  type: string;
+  [key: string]: unknown;
+}
 
-const transport = new WebSocketTransport("ws://localhost:3000");
+// @filename: index.ts
+// ---cut---
+import { WebSocketTransport } from "@open-ot/transport-websocket";
+import type { Message } from "./types";
+
+const transport = new WebSocketTransport<Message>("ws://localhost:3000");
 
 // Connect and start receiving messages
-await transport.connect((msg) => {
-  console.log("Received:", msg);
+await transport.connect((message) => {
+  console.log("Received:", message.type);
 });
 
 // Send a message
@@ -105,10 +114,10 @@ Establishes the WebSocket connection and registers the message handler.
 ```ts twoslash
 import { WebSocketTransport } from "@open-ot/transport-websocket";
 
-const transport = new WebSocketTransport("ws://localhost:3000");
+const transport = new WebSocketTransport<string>("ws://localhost:3000");
 
-await transport.connect((message: unknown) => {
-  //
+await transport.connect((message) => {
+  //                      ^?
   console.log("Received:", message);
 });
 ```
@@ -202,9 +211,9 @@ The base `WebSocketTransport` doesn't include automatic reconnection. Implement 
 ```ts twoslash
 import { WebSocketTransport } from "@open-ot/transport-websocket";
 
-class ReconnectingTransport {
-  private transport: WebSocketTransport;
-  //
+class ReconnectingTransport<M = unknown> {
+  private transport: WebSocketTransport<M>;
+  //        ^?
   private url: string;
   private maxRetries: number;
   private retryDelay: number;
@@ -214,10 +223,10 @@ class ReconnectingTransport {
     this.url = url;
     this.maxRetries = maxRetries;
     this.retryDelay = retryDelay;
-    this.transport = new WebSocketTransport(url);
+    this.transport = new WebSocketTransport<M>(url);
   }
 
-  async connect(onReceive: (msg: unknown) => void): Promise<void> {
+  async connect(onReceive: (msg: M) => void): Promise<void> {
     while (this.currentRetries < this.maxRetries) {
       try {
         await this.transport.connect(onReceive);
@@ -236,8 +245,8 @@ class ReconnectingTransport {
     }
   }
 
-  async send(msg: unknown): Promise<void> {
-    //
+  async send(msg: M): Promise<void> {
+    //     ^?
     return this.transport.send(msg);
   }
 

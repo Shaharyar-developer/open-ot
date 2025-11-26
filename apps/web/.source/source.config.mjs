@@ -15,12 +15,14 @@ import json from "shiki/langs/json.mjs";
 import yaml from "shiki/langs/yaml.mjs";
 import http from "shiki/langs/http.mjs";
 import console from "shiki/langs/console.mjs";
+import { remarkAutoTypeTable, createGenerator } from "fumadocs-typescript";
+var generator = createGenerator();
 var docs = defineDocs({
   dir: "content/docs"
 });
 var source_config_default = defineConfig({
   mdxOptions: {
-    remarkPlugins: [remarkMath],
+    remarkPlugins: [remarkMath, [remarkAutoTypeTable, { generator }]],
     // Place it at first, it should be executed before the syntax highlighter
     rehypePlugins: (v) => [rehypeKatex, ...v],
     rehypeCodeOptions: {

@@ -65,11 +65,10 @@ export interface Message {
 import { HttpSseTransport } from "@open-ot/transport-http-sse";
 import type { Message } from "./types";
 
-const transport = new HttpSseTransport("http://localhost:3000");
+const transport = new HttpSseTransport<Message>("http://localhost:3000");
 
 // Connect and start receiving messages
-await transport.connect((msg: unknown) => {
-  const message = msg as Message;
+await transport.connect((message) => {
   console.log("Received:", message.type);
 });
 
@@ -164,14 +163,23 @@ const transport = new HybridTransport({
 The transport operates in one of three modes:
 
 ```ts twoslash
-import { HybridTransport } from "@open-ot/transport-http-sse";
+// @filename: types.ts
+export interface Message {
+  type: string;
+  [key: string]: unknown;
+}
 
-const transport = new HybridTransport({
+// @filename: index.ts
+// ---cut---
+import { HybridTransport } from "@open-ot/transport-http-sse";
+import type { Message } from "./types";
+
+const transport = new HybridTransport<Message>({
   docId: "doc-1",
 });
 
 await transport.connect((msg) => {
-  console.log("Message:", msg);
+  console.log("Message:", msg.type);
 });
 // ---cut---
 // Check current mode

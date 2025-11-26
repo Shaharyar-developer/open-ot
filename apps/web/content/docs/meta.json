@@ -6,6 +6,9 @@
     "concepts",
     "...",
     "---Integrations---",
-    "...integrations"
-  ]
+    "...integrations",
+    "!api-reference"
+  ],
+  "root": true,
+  "title": "Documentation"
 }

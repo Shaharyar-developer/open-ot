@@ -1,17 +1,17 @@
 import { TransportAdapter } from "@open-ot/core";
 import WebSocket from "ws";
 
-export class WebSocketTransport implements TransportAdapter<unknown> {
+export class WebSocketTransport<M = unknown> implements TransportAdapter<M> {
   private socket: WebSocket | null = null;
   private url: string;
-  private onReceiveCallback: ((msg: unknown) => void) | null = null;
+  private onReceiveCallback: ((msg: M) => void) | null = null;
   private isConnected: boolean = false;
 
   constructor(url: string) {
     this.url = url;
   }
 
-  connect(onReceive: (msg: unknown) => void): Promise<void> {
+  connect(onReceive: (msg: M) => void): Promise<void> {
     return new Promise((resolve, reject) => {
       if (this.socket) {
         // Already connected or connecting
@@ -42,11 +42,9 @@ export class WebSocketTransport implements TransportAdapter<unknown> {
         if (this.onReceiveCallback) {
           try {
             const data = JSON.parse(event.data as string);
-            this.onReceiveCallback(data);
+            this.onReceiveCallback(data as M);
           } catch (e) {
-            // Failed to parse, ignore or log?
-            // Spec says "Transport implements serialization".
-            // We assume JSON for now.
+            // Failed to parse, ignore error.
           }
         }
       };
@@ -58,7 +56,7 @@ export class WebSocketTransport implements TransportAdapter<unknown> {
     });
   }
 
-  async send(msg: unknown): Promise<void> {
+  async send(msg: M): Promise<void> {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
       throw new Error("Transport disconnected");
     }
