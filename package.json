@@ -7,8 +7,7 @@
     "apps/*"
   ],
   "scripts": {
-    "build": "bun run prebuild && turbo build",
-    "prebuild": "bun run scripts/generate-api-reference.ts",
+    "build": "turbo build",
     "dev": "turbo dev",
     "lint": "turbo lint",
     "test": "turbo test",
