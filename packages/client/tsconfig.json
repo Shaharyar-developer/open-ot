@@ -1,7 +1,6 @@
 {
   "extends": "@open-ot/typescript-config/react-library.json",
   "compilerOptions": {
-    "baseUrl": ".",
     "paths": {
       "@open-ot/client/*": [
         "./src/*"
