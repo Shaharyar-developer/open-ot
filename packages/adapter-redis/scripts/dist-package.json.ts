@@ -12,7 +12,7 @@ const out = {
   exports: {
     ".": {
       import: "./index.js",
-      types: "./index.d.ts",
+      types: "./src/index.d.ts",
     },
   },
 };
