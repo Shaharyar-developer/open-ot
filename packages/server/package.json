@@ -1,6 +1,6 @@
 {
   "name": "@open-ot/server",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
@@ -15,7 +15,7 @@
   "scripts": {
     "test": "vitest run",
     "build": "rm -rf dist && bun build --target node src/index.ts --outdir dist && tsc --emitDeclarationOnly --outFile dist/index.d.ts && bun run scripts/dist-package.json.ts && cp README.md dist/README.md",
-"publish": "bun run build && npm publish ./dist --access public"
+    "publish": "bun run build && npm publish ./dist --access public"
   },
   "devDependencies": {
     "@open-ot/typescript-config": "workspace:*",
