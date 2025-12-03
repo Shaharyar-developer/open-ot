@@ -6,7 +6,7 @@ const out = {
   version: src.version,
   main: "index.js",
   types: "index.d.ts",
-  files: ["."],
+  files: ["*"],
   exports: {
     ".": {
       import: "./index.js",
