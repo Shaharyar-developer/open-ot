@@ -1,6 +1,6 @@
 {
   "name": "@open-ot/transport-websocket",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "private": false,
