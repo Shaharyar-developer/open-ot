@@ -1,9 +1,15 @@
 {
-  "extends": "@open-ot/typescript-config/base.json",
+   "extends": "@open-ot/typescript-config/base.json",
   "compilerOptions": {
-    "outDir": "dist",
-    "rootDir": "src"
+    "paths": {
+      "@open-ot/react/*": ["./src/*"]
+    },
+    "declaration": true,
+    "declarationMap": true,
+    "emitDeclarationOnly": true,
+    "outDir": "dist"
   },
+ 
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist"]
 }

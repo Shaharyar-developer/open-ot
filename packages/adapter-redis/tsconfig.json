@@ -1,9 +1,15 @@
 {
-    "extends": "@open-ot/typescript-config/base.json",
-    "compilerOptions": {
-        "outDir": "dist",
-        "rootDir": "src"
+     "extends": "@open-ot/typescript-config/base.json",
+  "compilerOptions": {
+    "paths": {
+      "@open-ot/adapter-redis/*": ["./src/*"]
     },
+    "declaration": true,
+    "declarationMap": true,
+    "emitDeclarationOnly": true,
+    "outDir": "dist"
+  },
+    
     "include": [
         "src/**/*"
     ],

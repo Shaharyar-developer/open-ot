@@ -1,6 +1,12 @@
 {
-  "extends": "@open-ot/typescript-config/base.json",
+   "extends": "@open-ot/typescript-config/base.json",
   "compilerOptions": {
+    "paths": {
+      "@open-ot/core/*": ["./src/*"]
+    },
+    "declaration": true,
+    "declarationMap": true,
+    "emitDeclarationOnly": true,
     "outDir": "dist"
   },
   "include": [
